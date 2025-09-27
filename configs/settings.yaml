@@ -1,21 +1,24 @@
 model:
-  name: "HuggingFaceH4/zephyr-7b-beta" # good balance of speed and capability
-  #name: "mistralai/Mistral-7B-Instruct-v0.2" # capable, open, but large
-  #fallback: "HuggingFaceH4/zephyr-7b-beta" # smaller, faster, but less capable
-  fallback: "microsoft/Phi-3-mini-4k-instruct" # smaller, faster, but less capable
+  name: "HuggingFaceH4/zephyr-7b-beta"
+  fallback: "microsoft/Phi-3-mini-4k-instruct"
+  provider: "featherless-ai"      # NEW: makes "model:provider" for Router
   max_new_tokens: 256
   temperature: 0.2
+
+# Chat backend + mode (requests → Router only)
+chat_backend: "router"             # reserved (future multi-backend)
+chat_stream: true                  # default streaming behavior for /v1/chat/stream
 
 limits:
   rate_per_min: 60
   cache_size: 256
 
 rag:
-  index_dataset: "" # e.g., "your-username/matrix-ai-index"
+  index_dataset: ""
   top_k: 4
 
 matrixhub:
   base_url: "https://api.matrixhub.io"
 
 security:
-  admin_token: "" # Should be set via env var
+  admin_token: ""

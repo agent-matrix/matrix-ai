@@ -1,94 +1,144 @@
-import os
-import logging
-import httpx
-from typing import Optional, Any, Union
-from tenacity import retry, stop_after_attempt, wait_exponential
+import os, json, time, logging
+from typing import Dict, List, Optional, Iterator, Tuple
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-class HFClient:
-    def __init__(self, model: str, fallback: Optional[str] = None, timeout: int = 20):
+ROUTER_URL = "https://router.huggingface.co/v1/chat/completions"
+
+def _require_token() -> str:
+    tok = os.getenv("HF_TOKEN")
+    if not tok:
+        raise ValueError("HF_TOKEN is not set. Put it in .env or export it before starting.")
+    return tok
+
+def _model_with_provider(model: str, provider: Optional[str]) -> str:
+    if provider and ":" not in model:
+        return f"{model}:{provider}"
+    return model
+
+def _mk_messages(system_prompt: Optional[str], user_text: str) -> List[Dict[str, str]]:
+    msgs: List[Dict[str, str]] = []
+    if system_prompt:
+        msgs.append({"role": "system", "content": system_prompt})
+    msgs.append({"role": "user", "content": user_text})
+    return msgs
+
+def _timeout_tuple(connect: float = 10.0, read: float = 60.0) -> Tuple[float, float]:
+    # requests timeout is (connect, read)
+    return (connect, read)
+
+class RouterRequestsClient:
+    """
+    Simple requests-only client for HF Router Chat Completions.
+    Supports non-streaming (returns str) and streaming (yields token strings).
+    """
+    def __init__(self, model: str, fallback: Optional[str] = None, provider: Optional[str] = None,
+                 max_retries: int = 2, connect_timeout: float = 10.0, read_timeout: float = 60.0):
         self.model = model
-        self.fallback = fallback
-        self.timeout = timeout
+        self.fallback = fallback if fallback != model else None
+        self.provider = provider
+        self.headers = {"Authorization": f"Bearer {_require_token()}"}
+        self.max_retries = max(0, int(max_retries))
+        self.timeout = _timeout_tuple(connect_timeout, read_timeout)
 
-        token = os.getenv("HF_TOKEN")
-        if not token:
-            raise ValueError("HF_TOKEN environment variable is not set. Put it in .env or export it before starting.")
-
-        self.headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        }
-        self.api_base = "https://api-inference.huggingface.co/models"
-
-    async def _post(self, model: str, payload: dict) -> Any:
-        url = f"{self.api_base}/{model}"
-        # wait_for_model=true is helpful if the container is cold
-        params = {"wait_for_model": "true"}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            r = await client.post(url, headers=self.headers, json=payload, params=params)
-            r.raise_for_status()
-            return r.json()
-
-    @staticmethod
-    def _extract_text(data: Union[dict, list, str]) -> str:
-        # HF can return list[{"generated_text": "..."}] or {"generated_text": "..."} or str
-        if isinstance(data, list) and data and isinstance(data[0], dict) and "generated_text" in data[0]:
-            return str(data[0]["generated_text"])
-        if isinstance(data, dict) and "generated_text" in data:
-            return str(data["generated_text"])
-        if isinstance(data, str):
-            return data
-        # Some serverless returns {"error": "..."} with 200—handle gently
-        if isinstance(data, dict) and "error" in data:
-            raise RuntimeError(f"Hugging Face error: {data['error']}")
-        raise RuntimeError(f"Unexpected HF response format: {data!r}")
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
-    async def _generate_once(self, model: str, prompt: str, max_new_tokens: int, temperature: float) -> str:
+    # -------- Non-stream (single text) --------
+    def chat_nonstream(self, system_prompt: Optional[str], user_text: str,
+                       max_tokens: int, temperature: float) -> str:
         payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": max(1, int(max_new_tokens)),
-                "temperature": float(max(temperature, 0.01)),
-                "return_full_text": False,
-            },
+            "model": _model_with_provider(self.model, self.provider),
+            "messages": _mk_messages(system_prompt, user_text),
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "stream": False,
         }
-        data = await self._post(model, payload)
-        return self._extract_text(data)
+        text, ok = self._try_once(payload)
+        if ok:
+            return text
 
-    async def generate(self, prompt: str, max_new_tokens: int, temperature: float) -> str:
-        # Try primary
+        # fallback (if configured)
+        if self.fallback:
+            payload["model"] = _model_with_provider(self.fallback, self.provider)
+            text, ok = self._try_once(payload)
+            if ok:
+                return text
+
+        raise RuntimeError(f"Chat non-stream failed: model={self.model} fallback={self.fallback}")
+
+    def _try_once(self, payload: dict) -> Tuple[str, bool]:
+        last_err = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                r = requests.post(ROUTER_URL, headers=self.headers, json=payload, timeout=self.timeout)
+                if r.status_code >= 400:
+                    logger.error("Router error %s: %s", r.status_code, r.text)
+                    last_err = RuntimeError(f"{r.status_code}: {r.text}")
+                    # do not hard-spin; brief pause
+                    time.sleep(min(1.5 * (attempt + 1), 3.0))
+                    continue
+                data = r.json()
+                return data["choices"][0]["message"]["content"], True
+            except Exception as e:
+                logger.error("Router request failure: %s", e)
+                last_err = e
+                time.sleep(min(1.5 * (attempt + 1), 3.0))
+        if last_err:
+            logger.error("Router exhausted retries: %s", last_err)
+        return "", False
+
+    # -------- Streaming (yield token deltas) --------
+    def chat_stream(self, system_prompt: Optional[str], user_text: str,
+                    max_tokens: int, temperature: float) -> Iterator[str]:
+        payload = {
+            "model": _model_with_provider(self.model, self.provider),
+            "messages": _mk_messages(system_prompt, user_text),
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "stream": True,
+        }
+        # primary
+        ok = False
+        for token in self._stream_once(payload):
+            ok = True
+            yield token
+        if ok:
+            return
+        # fallback stream if primary produced nothing (or died immediately)
+        if self.fallback:
+            payload["model"] = _model_with_provider(self.fallback, self.provider)
+            for token in self._stream_once(payload):
+                yield token
+
+    def _stream_once(self, payload: dict) -> Iterator[str]:
         try:
-            return await self._generate_once(self.model, prompt, max_new_tokens, temperature)
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            body = e.response.text
-            logger.error("HTTP error from HF API for model %s: %s", self.model, body)
-            # If not authorized / not found / gated, try fallback if defined
-            if code in (401, 403, 404) and self.fallback and self.fallback != self.model:
-                logger.warning("Falling back to model %s due to %s", self.fallback, code)
-                try:
-                    return await self._generate_once(self.fallback, prompt, max_new_tokens, temperature)
-                except Exception:
-                    # re-raise original meaningful error below
-                    pass
-            # Give a readable hint for common cause with Llama
-            if code in (401, 403, 404) and "meta-llama" in self.model.lower():
-                raise PermissionError(
-                    "Hugging Face returned 404/403 for a gated model. "
-                    "Make sure your HF account accepted the model license and your HF_TOKEN has access. "
-                    f"Model={self.model}"
-                ) from e
-            raise
+            with requests.post(ROUTER_URL, headers=self.headers, json=payload, stream=True, timeout=self.timeout) as r:
+                if r.status_code >= 400:
+                    logger.error("Router stream error %s: %s", r.status_code, r.text)
+                    return
+                for line in r.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        obj = json.loads(data)
+                        # OpenAI-style: delta tokens
+                        delta = obj["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield delta
+                    except Exception as e:
+                        logger.warning("Stream JSON parse issue: %s | line=%r", e, line)
+                        continue
         except Exception as e:
-            logger.error("Failed to call HF API for model %s: %s", self.model, e)
-            # Try fallback for transient or parsing errors
-            if self.fallback and self.fallback != self.model:
-                try:
-                    logger.warning("Falling back to model %s due to generic failure", self.fallback)
-                    return await self._generate_once(self.fallback, prompt, max_new_tokens, temperature)
-                except Exception:
-                    pass
-            raise
+            logger.error("Stream request failure: %s", e)
+            return
+
+    # -------- Planning (non-stream) --------
+    def plan_nonstream(self, system_prompt: str, user_text: str,
+                       max_tokens: int, temperature: float) -> str:
+        """Use same chat/completions but always non-stream for planning."""
+        return self.chat_nonstream(system_prompt, user_text, max_tokens, temperature)
