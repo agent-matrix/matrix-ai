@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card">
+    <h3>Dev – Exercise /v1/plan</h3>
+    <form method="post" style="display:grid; gap:12px;">
+      <textarea name="payload" rows="16" spellcheck="false">{{ sample }}</textarea>
+      <div style="display:flex; gap:8px;">
+        <button type="submit">Call /v1/plan</button>
+      </div>
+    </form>
+
+    {% if error %}
+      <h4>Error</h4>
+      <pre>{{ error }}</pre>
+    {% endif %}
+
+    {% if result %}
+      <h4>Response</h4>
+      <pre>{{ result }}</pre>
+    {% endif %}
+  </div>
+{% endblock %}

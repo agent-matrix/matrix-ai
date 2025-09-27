@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="card">
+    <h3>Chat about Matrix System 1.0</h3>
+    <form method="post" style="display:grid; gap:12px;">
+      <textarea name="question" rows="4" placeholder="Ask anything about the Matrix EcoSystem, Guardian, or Hub...">{{ question or '' }}</textarea>
+      <div><button type="submit">Ask</button></div>
+    </form>
+    {% if answer %}
+      <h4>Answer</h4>
+      <pre>{{ answer }}</pre>
+    {% endif %}
+  </div>
+{% endblock %}

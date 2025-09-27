@@ -1,0 +1,72 @@
+# .github/workflows/sync-to-hf-space.yml
+name: Sync to Hugging Face Space (matrix-ai)
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force push HEAD to Space main (use for first-time sync or non-fast-forward)"
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to push (defaults to current HEAD)"
+        type: string
+        default: ""
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: hf-space-sync-matrix-ai
+      cancel-in-progress: false
+
+    env:
+      # Hard-wired to your Space:
+      HF_SPACE_REMOTE: https://ruslanmv:${HF_TOKEN}@huggingface.co/spaces/ruslanmv/matrix-ai
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Prepare Git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git lfs install --local
+
+      - name: Resolve ref to push
+        id: ref
+        run: |
+          REF="${{ inputs.ref }}"
+          if [ -z "$REF" ]; then
+            REF="${GITHUB_REF_NAME}"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Push to Hugging Face Space (normal)
+        if: ${{ inputs.force != true }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "${HF_TOKEN}" ]; then
+            echo "❌ Missing HF_TOKEN secret. Add it under: Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+          # Always push current HEAD to Space's main (handles master→main mapping)
+          git push "${HF_SPACE_REMOTE}" "HEAD:main"
+
+      - name: Push to Hugging Face Space (force)
+        if: ${{ inputs.force == true }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "${HF_TOKEN}" ]; then
+            echo "❌ Missing HF_TOKEN secret. Add it under: Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+          git push --force "${HF_SPACE_REMOTE}" "HEAD:main"
