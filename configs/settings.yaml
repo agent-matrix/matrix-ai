@@ -1,0 +1,19 @@
+model:
+  name: "meta-llama/Meta-Llama-3-8B-Instruct"
+  fallback: "mistralai/Mistral-7B-Instruct-v0.2"
+  max_new_tokens: 256
+  temperature: 0.2
+
+limits:
+  rate_per_min: 60
+  cache_size: 256
+
+rag:
+  index_dataset: "" # e.g., "your-username/matrix-ai-index"
+  top_k: 4
+
+matrixhub:
+  base_url: "https://api.matrixhub.io"
+
+security:
+  admin_token: "" # Should be set via env var
