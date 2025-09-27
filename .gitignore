@@ -31,3 +31,4 @@ Thumbs.db
 
 # RAG index files
 .faiss/
+/backup

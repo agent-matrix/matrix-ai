@@ -1,12 +1,10 @@
 {% extends "base.html" %}
 {% block body %}
   <div class="card">
-    <h3>Dev – Exercise /v1/plan</h3>
-    <form method="post" style="display:grid; gap:12px;">
-      <textarea name="payload" rows="16" spellcheck="false">{{ sample }}</textarea>
-      <div style="display:flex; gap:8px;">
-        <button type="submit">Call /v1/plan</button>
-      </div>
+    <h3>Dev — Exercise /v1/plan</h3>
+    <form method="post" style="display:grid; gap:12px; margin-top:12px;">
+      <textarea name="payload" rows="18" spellcheck="false">{{ sample }}</textarea>
+      <div><button type="submit">Call /v1/plan</button></div>
     </form>
 
     {% if error %}

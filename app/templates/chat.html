@@ -1,14 +1,129 @@
 {% extends "base.html" %}
 {% block body %}
   <div class="card">
-    <h3>Chat about Matrix System 1.0</h3>
-    <form method="post" style="display:grid; gap:12px;">
-      <textarea name="question" rows="4" placeholder="Ask anything about the Matrix EcoSystem, Guardian, or Hub...">{{ question or '' }}</textarea>
-      <div><button type="submit">Ask</button></div>
+    <h3>Chat — Matrix System 1.0</h3>
+
+    <!-- Messages -->
+    <div id="messages" style="margin-top:14px; display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow:auto;">
+      <!-- Filled by JS from localStorage -->
+    </div>
+
+    <!-- Composer -->
+    <form id="chatForm" style="display:grid; gap:12px; margin-top:14px;">
+      <textarea id="question" rows="4" placeholder="Ask anything about Matrix EcoSystem, Guardian, or Hub..."></textarea>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button id="sendBtn" type="submit">Send</button>
+        <button id="clearBtn" type="button" style="background:#0c1d13; color:#7ef7a7; box-shadow:none; border:1px solid var(--border);">Clear</button>
+      </div>
     </form>
-    {% if answer %}
-      <h4>Answer</h4>
-      <pre>{{ answer }}</pre>
-    {% endif %}
   </div>
+
+  <style>
+    .bubble {
+      max-width: 80%;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,255,156,0.05);
+      font-family: "Share Tech Mono", monospace;
+    }
+    .user   { align-self: flex-end; background: #062013; color: var(--text); border-color: #0e2e1a; }
+    .bot    { align-self: flex-start; background: #05140c; color: var(--text); border-color: #0c2416; }
+    .meta   { font-size: 11px; opacity: .6; margin-top: 2px; }
+  </style>
+
+  <script>
+    (function () {
+      const KEY = 'matrix_ai_chat_history';
+      const messagesEl = document.getElementById('messages');
+      const form = document.getElementById('chatForm');
+      const input = document.getElementById('question');
+      const sendBtn = document.getElementById('sendBtn');
+      const clearBtn = document.getElementById('clearBtn');
+
+      function loadHistory() {
+        try {
+          return JSON.parse(localStorage.getItem(KEY) || '[]');
+        } catch { return []; }
+      }
+      function saveHistory(hist) {
+        localStorage.setItem(KEY, JSON.stringify(hist.slice(-100))); // cap
+      }
+      function msgEl(role, text, ts) {
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.gap = '2px';
+        const b = document.createElement('div');
+        b.className = 'bubble ' + (role === 'user' ? 'user' : 'bot');
+        b.textContent = text;
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = new Date(ts).toLocaleString();
+        wrap.appendChild(b);
+        wrap.appendChild(meta);
+        return wrap;
+      }
+      function render(hist) {
+        messagesEl.innerHTML = '';
+        hist.forEach(m => messagesEl.appendChild(msgEl(m.role, m.text, m.ts)));
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      let history = loadHistory();
+      if (history.length === 0) {
+        // seed a friendly welcome
+        history.push({ role: 'bot', text: 'Welcome to MATRIX-AI. Ask me about Matrix System 1.0, Guardian, or the Hub.', ts: Date.now() });
+        saveHistory(history);
+      }
+      render(history);
+
+      clearBtn.addEventListener('click', () => {
+        history = [];
+        saveHistory(history);
+        render(history);
+      });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const q = (input.value || '').trim();
+        if (!q) return;
+        input.value = '';
+        sendBtn.disabled = true;
+
+        // append user message
+        const userMsg = { role: 'user', text: q, ts: Date.now() };
+        history.push(userMsg);
+        saveHistory(history);
+        render(history);
+
+        try {
+          const port = (window.location.port || (window.location.href.includes('/+/') ? '' : ''));
+          const base = window.location.origin; // same origin (HF proxies handle it)
+          const r = await fetch(base.replace(/\/+$/, '') + '/v1/chat', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: q })
+          });
+          let answer = '(no answer)';
+          if (r.ok) {
+            const data = await r.json();
+            answer = (data && (data.answer || data.response || JSON.stringify(data))) || answer;
+          } else {
+            answer = `HTTP ${r.status}`;
+          }
+          history.push({ role: 'bot', text: answer, ts: Date.now() });
+        } catch (err) {
+          history.push({ role: 'bot', text: 'Error: ' + (err && err.message ? err.message : String(err)), ts: Date.now() });
+        } finally {
+          saveHistory(history);
+          render(history);
+          sendBtn.disabled = false;
+        }
+      });
+    })();
+  </script>
 {% endblock %}

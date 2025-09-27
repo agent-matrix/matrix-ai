@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import httpx, os, json
 
@@ -7,13 +7,13 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 def _self_base_url() -> str:
-    # When running inside HF Space Docker, use localhost + PORT
     port = os.getenv("PORT", "7860")
     return f"http://127.0.0.1:{port}"
 
-@router.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("home.html", {"request": request})
+@router.get("/", include_in_schema=False)
+async def home_redirect():
+    # Default to the Chat page
+    return RedirectResponse(url="/chat", status_code=302)
 
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_get(request: Request):
@@ -21,11 +21,10 @@ async def chat_get(request: Request):
 
 @router.post("/chat", response_class=HTMLResponse)
 async def chat_post(request: Request, question: str = Form(...)):
-    # Call your /v1/chat (or return a placeholder)
-    base_url = _self_base_url()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post("/v1/chat", base_url=base_url, json={"query": question})
+        async with httpx.AsyncClient(base_url=_self_base_url(), timeout=15.0) as client:
+            r = await client.post("/v1/chat", json={"query": question})
+            r.raise_for_status()
             data = r.json()
             answer = data.get("answer", "(no answer)")
     except Exception as e:
@@ -34,7 +33,6 @@ async def chat_post(request: Request, question: str = Form(...)):
 
 @router.get("/dev", response_class=HTMLResponse)
 async def dev_get(request: Request):
-    # Prefill a realistic plan request used by Matrix-Guardian
     sample = {
         "context": {
             "entity_uid": "matrix-ai",
@@ -49,14 +47,14 @@ async def dev_get(request: Request):
 
 @router.post("/dev", response_class=HTMLResponse)
 async def dev_post(request: Request, payload: str = Form(...)):
-    base_url = _self_base_url()
     try:
         body = json.loads(payload)
     except Exception as e:
         return templates.TemplateResponse("dev.html", {"request": request, "sample": payload, "error": f"Invalid JSON: {e}"})
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post("/v1/plan", base_url=base_url, json=body)
+        async with httpx.AsyncClient(base_url=_self_base_url(), timeout=15.0) as client:
+            r = await client.post("/v1/plan", json=body)
             r.raise_for_status()
             data = r.json()
             pretty = json.dumps(data, indent=2)
