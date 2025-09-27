@@ -2,10 +2,19 @@
 {% block body %}
   <div class="card">
     <h3>Dev — Exercise /v1/plan</h3>
-    <form method="post" style="display:grid; gap:12px; margin-top:12px;">
-      <textarea name="payload" rows="18" spellcheck="false">{{ sample }}</textarea>
-      <div><button type="submit">Call /v1/plan</button></div>
+
+    <form id="devForm" method="post" style="display:grid; gap:12px; margin-top:12px;">
+      <textarea id="payload" name="payload" rows="18" spellcheck="false">{{ sample }}</textarea>
+      <div>
+        <button id="devBtn" type="submit">Call /v1/plan</button>
+      </div>
     </form>
+
+    <!-- Client-side validation error (in addition to server-side) -->
+    <div id="clientError" class="dev-error" style="display:none; margin-top:10px;">
+      <h4>Error</h4>
+      <pre id="clientErrText"></pre>
+    </div>
 
     {% if error %}
       <h4>Error</h4>
@@ -17,4 +26,102 @@
       <pre>{{ result }}</pre>
     {% endif %}
   </div>
+
+  <!-- Fullscreen loader overlay -->
+  <div id="loader" class="loader-overlay" aria-hidden="true" style="display:none;">
+    <div class="loader-wrap">
+      <div class="loader-spinner"></div>
+      <div class="loader-text">GENERATING PLAN…</div>
+    </div>
+  </div>
+
+  <style>
+    /* Inline error block */
+    .dev-error pre {
+      background: #020a04;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Overlay */
+    .loader-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: none; /* toggled by JS */
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(3px);
+      background:
+        radial-gradient(800px 500px at 50% -20%, rgba(0,255,156,0.08), transparent 40%),
+        linear-gradient(180deg, rgba(0,0,0,0.72), rgba(0,0,0,0.65));
+    }
+    .loader-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 22px 26px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(6,16,6,0.75);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,255,156,0.06);
+    }
+    .loader-spinner {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: 3px solid rgba(0,255,156,0.15);
+      border-top-color: var(--matrix);
+      border-right-color: var(--matrix);
+      box-shadow: 0 0 18px rgba(0,255,156,0.35);
+      animation: spin 0.9s linear infinite, glow 3.5s ease-in-out infinite;
+    }
+    .loader-text {
+      font-family: "Share Tech Mono", monospace;
+      letter-spacing: 0.08em;
+      color: var(--matrix);
+      text-shadow: 0 0 8px rgba(0,255,156,0.35);
+      opacity: 0.95;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+
+  <script>
+    (function () {
+      const form   = document.getElementById('devForm');
+      const btn    = document.getElementById('devBtn');
+      const ta     = document.getElementById('payload');
+      const overlay= document.getElementById('loader');
+      const errBox = document.getElementById('clientError');
+      const errTxt = document.getElementById('clientErrText');
+
+      form.addEventListener('submit', (e) => {
+        // Clear client error if any
+        errBox.style.display = 'none';
+        errTxt.textContent = '';
+
+        // Quick client-side JSON validation for better UX
+        const raw = (ta.value || '').trim();
+        try {
+          JSON.parse(raw);
+        } catch (ex) {
+          e.preventDefault();
+          errTxt.textContent = "Invalid JSON: " + (ex && ex.message ? ex.message : String(ex));
+          errBox.style.display = 'block';
+          return;
+        }
+
+        // Show loader + disable button to prevent double submit
+        btn.disabled = true;
+        btn.textContent = 'Planning…';
+        overlay.style.display = 'flex';
+
+        // Let the normal form post proceed; overlay disappears on page reload
+      });
+    })();
+  </script>
 {% endblock %}

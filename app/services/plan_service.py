@@ -169,9 +169,11 @@ class PlanService:
     async def generate(self, req: PlanRequest) -> PlanResponse:
         """
         Build prompt -> call Router (non-stream) -> robustly parse -> PlanResponse.
+        Includes a one-shot JSON reformat retry if the first output isn't valid JSON.
         """
         final_prompt = _build_prompt(req)
-        # run the blocking requests call in a worker thread to avoid blocking the event loop
+
+        # 1) First pass: ask for the plan
         raw_text = await asyncio.to_thread(
             self.client.plan_nonstream,
             SYSTEM_PLANNER,
@@ -179,6 +181,31 @@ class PlanService:
             self.settings.model.max_new_tokens,
             self.settings.model.temperature,
         )
+
+        # 2) If not valid JSON, ask the model to strictly reformat to JSON only (no fences)
+        needs_reformat = False
+        try:
+            _ = _extract_json_block(raw_text)
+        except Exception:
+            needs_reformat = True
+
+        if needs_reformat:
+            reformat = (
+                "Format the following content as a strict JSON object with EXACT keys "
+                "plan_id, steps (array of strings), risk (low|medium|high), explanation (string). "
+                "Output ONLY JSON. No backticks. No extra keys.\n\nCONTENT:\n"
+                + raw_text
+            )
+            re_text = await asyncio.to_thread(
+                self.client.plan_nonstream,
+                SYSTEM_PLANNER,
+                reformat,
+                self.settings.model.max_new_tokens,
+                max(0.05, float(self.settings.model.temperature) * 0.75),
+            )
+            raw_text = re_text  # replace with reformatted text
+
+        # 3) Parse safely (or fallback) and validate against schema
         parsed = _safe_parse_or_fallback(raw_text, final_prompt)
         return PlanResponse.model_validate(parsed)
 

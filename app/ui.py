@@ -34,6 +34,7 @@ async def chat_post(request: Request, question: str = Form(...)):
 @router.get("/dev", response_class=HTMLResponse)
 async def dev_get(request: Request):
     sample = {
+        "mode": "plan",   
         "context": {
             "entity_uid": "matrix-ai",
             "health": {"score": 0.64, "status": "degraded", "last_checked": "2025-09-27T00:00:00Z"},
