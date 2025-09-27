@@ -1,0 +1,70 @@
+{"text":"MatrixHub is the API and registry for Matrix apps, tracking health and LKG metadata.","source":"kb:matrixhub"}
+{"text":"Matrix Guardian coordinates probes, writes /status to MatrixHub, and asks matrix-ai for plans.","source":"kb:guardian"}
+{"text":"Matrix System 1.0 turns a static registry into an alive, policy-governed, self-healing platform (observe → plan → approve/execute → audit).","source":"kb:overview"}
+{"text":"Core components: Matrix-Hub (API/registry), MatrixDB (Postgres schema), Matrix-Guardian (control plane), Matrix-AI (planning service on Hugging Face).","source":"kb:overview:components"}
+{"text":"End-to-end loop: Guardian probes targets → POST /status to Hub → AI returns a low-risk JSON plan → policy gate decides HITL or Autopilot → actions recorded as events.","source":"kb:overview:loop"}
+{"text":"MatrixHub is the API and registry for Matrix apps, tracking health and LKG metadata.","source":"kb:matrixhub"}
+{"text":"Matrix-Hub Stage-1 routes: GET /apps, GET /apps/{id}, GET /apps/{id}/status, GET /apps/{id}/bundle, POST /apps, POST /status, POST /guardian/approve|reject.","source":"kb:hub:routes:stage1"}
+{"text":"Matrix-Hub Stage-2 (flagged) routes: POST /bundles, GET /advisories, POST /patches/proposals, POST /patches/accept.","source":"kb:hub:routes:stage2"}
+{"text":"New middlewares (additive): in-memory RateLimit (fixed window per IP/route) and Idempotency-Key propagation to request.state.","source":"kb:hub:middleware"}
+{"text":"Security: optional JWT RS256 role checks via JWT_PUBLIC_KEY_PEM; falls back to API token dependency if configured; otherwise dev-mode allow.","source":"kb:hub:security"}
+{"text":"ETag behavior: GET endpoints return weak ETags on stable payloads; If-None-Match yields 304 to save bandwidth and enable client caching.","source":"kb:http:etag"}
+{"text":"Idempotency: POST endpoints accept Idempotency-Key; server persists request body hash and response to avoid duplicate side effects on retries.","source":"kb:http:idempotency"}
+{"text":"Entity additive fields: health_score (float), health_status (text), health_last_checked (timestamptz), lkg_version (text), lkg_digest (text).","source":"kb:hub:models:entity"}
+{"text":"Tables (Hub models): HealthCheck(id, entity_uid, check, result, latency_ms, reasons, ts), Event(id, type, entity_uid, payload, ts), IdempotencyKey(key, route, body_hash, status_code, response_json, created_at), Advisory(id, entity_uid, source, severity, title, description, cve, cvss, detected_at, status, created_at).","source":"kb:hub:models:tables"}
+{"text":"CAS redirection: GET /apps/{id}/bundle issues 307 to CAS_BASE_URL/sha256/{lkg_digest}.","source":"kb:hub:cas"}
+{"text":"Environment flags (Hub): ADVISORIES_ENABLED, PATCHES_FACADE_ENABLED, RATE_LIMIT_PER_MIN, IDEMPOTENCY_ENABLED, CAS_BASE_URL, JWT_PUBLIC_KEY_PEM.","source":"kb:hub:env"}
+{"text":"Bundles push: POST /bundles accepts {entity_uid, digest, version, lkg?}; optionally updates Entity.lkg_* when lkg=true; records event=bundle.push; idempotent.","source":"kb:hub:bundles"}
+{"text":"Patches façade: POST /patches/proposals and /patches/accept record audit events; /patches/accept may set new lkg_version/lkg_digest.","source":"kb:hub:patches:facade"}
+{"text":"Advisories (optional): GET /advisories supports filter by q, entity_uid, severity; paginated with X-Total-Count and ETag.","source":"kb:hub:advisories"}
+{"text":"Matrix Guardian coordinates probes, writes /status to MatrixHub, and asks matrix-ai for plans.","source":"kb:guardian"}
+{"text":"Guardian probes: safe HTTP checks, optional MCP echo handshake; short timeouts, retries, and sandboxed execution by default.","source":"kb:guardian:probes"}
+{"text":"Guardian policy gate: evaluates AI plan risk vs policy thresholds and allowlists; enforces HITL (human-in-the-loop) by default; supports Autopilot when enabled.","source":"kb:guardian:policy"}
+{"text":"Autonomy levels: A0 Manual (observe/plan only), A1 Suggest (propose; auto re-probe/metadata), A2 Safe Autopilot (LKG pin/rollback, cache warm-ups), A3 Extended (sandboxed patchers).","source":"kb:guardian:autonomy"}
+{"text":"Autopilot (LangGraph): multi-agent orchestration with nodes for sensing (probes), planning (matrix-ai), critic, and execution; always emits audit events.","source":"kb:guardian:autopilot"}
+{"text":"Guardian REST (core): GET /healthz, GET /readyz; HITL resume endpoint POST /threads/{thread_id}/resume; optional Autopilot API when AUTOPILOT_API_ENABLED=true.","source":"kb:guardian:api"}
+{"text":"Guardian configuration (key vars): DATABASE_URL, MATRIXHUB_API_BASE, MATRIX_AI_BASE, API_TOKEN, AUTOPILOT_ENABLED, AUTOPILOT_INTERVAL_SEC, AUTOPILOT_POLICY, AUTOPILOT_SAFE_MODE.","source":"kb:guardian:env"}
+{"text":"Matrix-AI service (HF): POST /v1/plan returns short, low-risk JSON plan; POST /v1/chat reserved for RAG Q&A (optional).","source":"kb:ai:overview"}
+{"text":"Matrix-AI safety: PII redaction on prompts, strict JSON schema validation, exponential backoff to HF, structured logging, in-memory rate limiting.","source":"kb:ai:safety"}
+{"text":"Deployment Matrix-AI: recommend Hugging Face Spaces with HF_TOKEN secret; CPU for tests, GPU for larger models.","source":"kb:ai:deploy"}
+{"text":"MatrixDB (Postgres) additive schema: Stage‑1 tables versions, artifacts, health, checks, events; Stage‑2 tables bundles, proposals, optional jobs.","source":"kb:db:tables"}
+{"text":"Indexes (DB): time-series and lookup indexes such as idx_*_app_id_ts, idx_artifacts_sha256, idx_proposals_state; all created IF NOT EXISTS.","source":"kb:db:indexes"}
+{"text":"Why additive patches: zero-downtime upgrades; no destructive ALTER/DROP; feature flags hide Stage‑2 until enabled.","source":"kb:upgrade:rationale"}
+{"text":"Hub patch script: apply_matrixhub_patch_v2.sh creates new routers/middleware and appends guarded blocks to app.py, models.py, config.py, utils/jwt_helper.py, and optionally reqlog.","source":"kb:patch:hub"}
+{"text":"DB patch script: apply_matrixhub_db_patch_v2a.sh drops SQL init files for Stage‑1/2 into db/docker-entrypoint-initdb.d; safe to apply to running clusters via psql.","source":"kb:patch:db"}
+{"text":"Alembic migrations (Hub repo): stage1_health_lkg (entity health/LKG, tables health_check/event/idempotency_key), stage2_addons (advisory).","source":"kb:hub:migrations"}
+{"text":"Events audit trail: every plan/proposal/approval is appended to event(type, entity_uid, payload, ts) for compliance and explainability.","source":"kb:audit:events"}
+{"text":"Checks timeline: HealthCheck captures rolling probe history per entity; use for SLOs and anomaly detection.","source":"kb:observability:checks"}
+{"text":"LKG semantics: last-known-good digest/version allow quick rollback or pin; GET /apps/{id}/bundle redirects to CAS for the pinned artifact.","source":"kb:lkg"}
+{"text":"CAS integration: CAS_BASE_URL points to content-addressed storage; URL format /sha256/{digest}; digest is lowercased.","source":"kb:cas"}
+{"text":"Security posture: JWT roles for write operations (when JWT_PUBLIC_KEY_PEM set); otherwise API tokens or dev-mode; minimal logging of sensitive data.","source":"kb:security:auth"}
+{"text":"Rate limiting: simple in-memory fixed window per (client_ip, route) with default RATE_LIMIT_PER_MIN=600 (override via env).","source":"kb:security:ratelimit"}
+{"text":"Reqlog trace propagation: optional adapter appends trace_id from request.state.request_id into logging context for correlation.","source":"kb:observability:trace"}
+{"text":"Feature flags: Stage‑2 routes guarded by ADVISORIES_ENABLED and PATCHES_FACADE_ENABLED to allow gradual rollout.","source":"kb:featureflags"}
+{"text":"HITL approvals: POST /guardian/approve or /guardian/reject record decision events (202 Accepted) and allow workflows to resume.","source":"kb:hitl"}
+{"text":"Jobs table (optional): lightweight visibility/queue for background workers; not required for Stage‑1; helpful for Autopilot executors.","source":"kb:jobs"}
+{"text":"Deployment topologies: local Docker Compose (Hub+DB+Guardian), cloud k8s for Hub/Guardian with DBaaS, Matrix-AI on HF Space.","source":"kb:deploy:topologies"}
+{"text":"Rollout order: Patch DB → deploy Matrix-AI → patch & redeploy Hub → deploy Guardian → validate flow → enable Stage‑2 flags → optionally enable Autopilot.","source":"kb:deploy:rollout"}
+{"text":"Client contracts: GETs support ETag and X-Total-Count; POSTs support Idempotency-Key; responses are JSON and append-only state updates.","source":"kb:contracts"}
+{"text":"Guardian Autopilot policy file: YAML defining risk thresholds, allowed actions, protected entities, and autonomy level; referenced by AUTOPILOT_POLICY.","source":"kb:guardian:policy:file"}
+{"text":"Safety rails for Autopilot: dry-run mode, global kill-switch, blast-radius caps, rate limits, and human override at any step.","source":"kb:guardian:autopilot:safety"}
+{"text":"Adoption of orphaned apps: detect dead upstreams, pin LKG, mirror artifacts to CAS, open proposal of type 'orphan-adopt' based on policy.","source":"kb:ecosystem:orphanage"}
+{"text":"Consulting value: blueprint for AI-assisted SRE with policy gates, auditability, and staged autonomy; reduces MTTR and operational toil.","source":"kb:value:consulting"}
+{"text":"Community value: portable OSS pattern (HF + FastAPI + Postgres) that runs locally and scales to k8s; additive upgrades encourage safe contribution.","source":"kb:value:community"}
+{"text":"Matrix-AI request contract (/v1/plan): input context summarizing health/last checks; output JSON with {plan_id, steps[], risk, rationale}; strictly validated.","source":"kb:ai:contract"}
+{"text":"Guardian → AI interaction: Guardian sanitizes context, calls /v1/plan with retries/backoff, verifies schema, then emits guardian.plan event.","source":"kb:ai:interaction"}
+{"text":"Hub advisories feed: list potential risks or CVEs associated with entities; consumers can filter by severity and entity_uid.","source":"kb:advisories:semantics"}
+{"text":"Patch proposals workflow: create proposal with diff; on acceptance, optionally update Entity.lkg_* or create jobs; everything audited.","source":"kb:patches:workflow"}
+{"text":"Performance notes: DB indexes optimized for app_uid+ts scans; API supports pagination and caching via ETag to scale reads.","source":"kb:performance"}
+{"text":"Testing strategy: smoke tests for routers; schema migrations idempotent; Autopilot smoke test validates graph assembly and no-ops in safe mode.","source":"kb:testing"}
+{"text":"Observability checklist: ensure health lag SLO, events/sec, 4xx/5xx on APIs, probe latency, plan generation timing, Autopilot actions count.","source":"kb:observability:slo"}
+{"text":"Backup/DR: periodic backups of MatrixDB; versioned CAS artifacts; ability to roll back to previous Hub/Guardian images safely.","source":"kb:operations:dr"}
+{"text":"Compliance: append-only events and idempotent writes help satisfy change-management and audit requirements in regulated environments.","source":"kb:compliance"}
+{"text":"Security hardening: secrets in vault/Space Secrets, minimal scopes, locked egress for probes, signed artifacts, statement timeouts in DB.","source":"kb:security:hardening"}
+{"text":"Known limitations: in-memory rate limiting is single-instance only; for multi-node deploys prefer Redis-based limiter.","source":"kb:limitations:ratelimit"}
+{"text":"Known limitations: Autopilot should start in A1/A2 with conservative policies; sandboxed patchers require extra isolation and tests.","source":"kb:limitations:autopilot"}
+{"text":"API compatibility: patches are additive and use guarded markers; re-running patch scripts is idempotent and safe.","source":"kb:compatibility"}
+{"text":"Versioning: use semantic versioning for entities (versions table) and link artifacts by foreign key; LKG marks last-known-good release.","source":"kb:versioning"}
+{"text":"Data retention suggestion: keep detailed checks for N days, aggregate beyond; events retained longer for audits; configurable per org.","source":"kb:data:retention"}
+{"text":"CLI/SDK consumers: Matrix clients rely on stable Hub contracts, ETags, and LKG semantics to deliver reliable local installs.","source":"kb:clients"}
+{"text":"SRE workflow: measure, propose, approve, execute safe steps, validate via re-probe; everything tracked in events and health.","source":"kb:sre:workflow"}

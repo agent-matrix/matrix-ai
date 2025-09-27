@@ -9,6 +9,10 @@ from typing import Any, Dict
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+# --- ADDED: Import dependencies needed for pre-loading ---
+from .deps import get_settings
+from .services.chat_service import get_retriever
+
 # -----------------------------------------------------------------------------
 # Early: load .env (so HF_TOKEN, ADMIN_TOKEN, etc. are available locally)
 # -----------------------------------------------------------------------------
@@ -65,7 +69,6 @@ _load_env_file([".env", "configs/.env", ".env.local", "configs/.env.local"])
 # -----------------------------------------------------------------------------
 # Middlewares
 # -----------------------------------------------------------------------------
-# Prefer the canonical package name; if your repo uses "middlewares/", this tries both.
 try:
     from .middleware import attach_middlewares  # singular
 except Exception:
@@ -82,7 +85,6 @@ except Exception:
 # -----------------------------------------------------------------------------
 from .routers import health, plan, chat
 
-# Optional UI (Home/Chat/Dev). If missing, we gracefully fall back to a JSON root.
 try:
     from .ui import router as ui_router  # type: ignore
     HAS_UI = True
@@ -103,9 +105,14 @@ async def lifespan(app: FastAPI):
     app.state.started_at = time.time()
     app.state.version = os.getenv("APP_VERSION", "1.0.0")
 
-    # Minimal diagnostics; HF_TOKEN presence matters for inference
+    # --- ADDED: Pre-load the RAG model and index on startup ---
+    logger = logging.getLogger("uvicorn.error")
+    logger.info("Warming up RAG retriever...")
+    get_retriever(get_settings())
+    logger.info("RAG retriever is ready.")
+    
     hf_token_present = bool(os.getenv("HF_TOKEN"))
-    logging.getLogger("uvicorn.error").info(
+    logger.info(
         "matrix-ai starting (version=%s, port=%s, hf_token_present=%s)",
         app.state.version,
         os.getenv("PORT", "7860"),
@@ -115,7 +122,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         uptime = time.time() - getattr(app.state, "started_at", time.time())
-        logging.getLogger("uvicorn.error").info(
+        logger.info(
             "matrix-ai shutting down (uptime=%.2fs)", uptime
         )
 
@@ -131,19 +138,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Middlewares (request-id, gzip, rate-limit, etc.)
     attach_middlewares(app)
-
-    # Core routers
     app.include_router(health.router, tags=["Health"])
     app.include_router(plan.router, prefix="/v1", tags=["Planning"])
     app.include_router(chat.router, prefix="/v1", tags=["Chat"])
 
-    # Optional UI (adds '/', '/chat', '/dev')
     if HAS_UI:
         app.include_router(ui_router, tags=["UI"])
     else:
-        # Minimal root so HF root probes pass even without UI
         @app.get("/", include_in_schema=False)
         async def root() -> Dict[str, Any]:
             return {
@@ -153,12 +155,9 @@ def create_app() -> FastAPI:
                 "docs": "/docs",
                 "endpoints": {"plan": "/v1/plan", "chat": "/v1/chat", "healthz": "/healthz"},
             }
-
         @app.get("/home", include_in_schema=False)
         async def home_redirect():
             return RedirectResponse(url="/docs", status_code=302)
-
     return app
-
 
 app = create_app()
