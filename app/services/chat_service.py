@@ -22,8 +22,8 @@ except Exception:  # pragma: no cover
 
 SYSTEM_PROMPT = (
     "You are MATRIX-AI, a concise, helpful assistant for the Matrix EcoSystem.\n"
-    "You MUST use the provided CONTEXT. If an answer is not supported by the context, say you don't know.\n"
-    "Prefer short, clear sentences. Include product/feature names exactly as written in the context.\n"
+    "Use the provided CONTEXT strictly. If the answer is not supported by context, say you don't know.\n"
+    "Reply in 2–4 short sentences. Do NOT repeat sentences or rephrase the same point multiple times.\n"
 )
 
 # Thread-safe singleton retriever
@@ -55,14 +55,62 @@ def get_retriever(settings: Settings) -> Optional[Retriever]:
 
 
 # ----------------------------
+# Anti-repetition helpers
+# ----------------------------
+_SENT_SPLIT = re.compile(r'(?<=[\.\!\?])\s+')
+_NORM = re.compile(r'[^a-z0-9\s]+')
+
+
+def _norm_sentence(s: str) -> str:
+    s = s.lower().strip()
+    s = _NORM.sub(' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
+def _jaccard(a: str, b: str) -> float:
+    ta = set(a.split())
+    tb = set(b.split())
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, len(ta | tb))
+
+
+def _squash_repetition(text: str, max_sentences: int = 4, sim_threshold: float = 0.88) -> str:
+    """
+    Remove near-duplicate sentences while keeping order.
+    Also collapses whitespace and caps total sentences.
+    """
+    t = re.sub(r'\s+', ' ', text).strip()
+    if not t:
+        return t
+    parts = _SENT_SPLIT.split(t)
+    out: List[str] = []
+    norms: List[str] = []
+    for s in parts:
+        ns = _norm_sentence(s)
+        if not ns:
+            continue
+        is_dup = False
+        for prev in norms:
+            if _jaccard(prev, ns) >= sim_threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            out.append(s.strip())
+            norms.append(ns)
+        if len(out) >= max_sentences:
+            break
+    return ' '.join(out).strip()
+
+
+# ----------------------------
 # RAG utilities (ranking & snippets)
 # ----------------------------
-
 _ALIAS_TABLE: Dict[str, List[str]] = {
-    # canonical -> aliases
-    "matrixhub": ["matrix hub", "matrixhub", "hub api", "catalog", "registry", "cas"],
-    "mcp": ["model context protocol", "mcp", "manifest", "server manifest", "admin api"],
-    "agent-matrix": ["agent-matrix", "matrix agents", "matrix ecosystem", "matrix toolkit"],
+    "matrixhub": ["matrix hub", "hub api", "catalog", "registry", "cas"],
+    "mcp": ["model context protocol", "manifest", "server manifest", "admin api"],
+    "agent-matrix": ["matrix agents", "matrix ecosystem", "matrix toolkit"],
 }
 
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
@@ -77,7 +125,7 @@ def _expand_query(q: str) -> str:
     ql = q.lower()
     extras: List[str] = []
     for canon, variants in _ALIAS_TABLE.items():
-        if any(v in ql for v in variants):
+        if any(v in ql for v in ([canon] + variants)):
             extras.extend([canon] + variants)
     if extras:
         return q + " | " + " ".join(sorted(set(extras)))
@@ -85,7 +133,6 @@ def _expand_query(q: str) -> str:
 
 
 def _keyword_overlap_score(query: str, text: str) -> float:
-    """Simple lexical grounding score: Jaccard over unique tokens (stopword-agnostic)."""
     q_tokens = set(_normalize(query))
     d_tokens = set(_normalize(text))
     if not q_tokens or not d_tokens:
@@ -105,14 +152,9 @@ def _domain_boost(text: str) -> float:
 
 
 def _best_paragraphs(text: str, query: str, max_chars: int = 700) -> str:
-    """
-    Split by blank lines and pick 1-2 best paragraphs by lexical overlap.
-    Keep it compact to avoid swamping the LLM.
-    """
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     if not paras:
         return text[:max_chars]
-
     scored = [(p, _keyword_overlap_score(query, p)) for p in paras]
     scored.sort(key=lambda x: x[1], reverse=True)
     picked: List[str] = []
@@ -149,14 +191,8 @@ def _rerank_docs(
     k_final: int,
     reranker: Optional["CrossEncoder"] = None,
 ) -> List[Dict]:
-    """
-    Combine vector score, keyword overlap, domain boost, and optional cross-encoder.
-    Score = 0.55*vec + 0.35*lex + 0.10*boost (+ 0.20*ce if available, rescaled).
-    """
     if not docs:
         return []
-
-    # Normalize vector scores (cosine similarities 0..1-ish) to 0..1
     vec_scores = [float(d.get("score", 0.0)) for d in docs]
     if vec_scores:
         vmin = min(vec_scores)
@@ -171,7 +207,6 @@ def _rerank_docs(
 
     ce_scores = _cross_encoder_scores(reranker, query, docs)
     if ce_scores:
-        # Min-max normalize CE too
         cmin, cmax = min(ce_scores), max(ce_scores)
         crng = max(1e-6, (cmax - cmin))
         ce_norm = [(c - cmin) / crng for c in ce_scores]
@@ -186,15 +221,10 @@ def _rerank_docs(
         merged.append((score, d))
 
     merged.sort(key=lambda x: x[0], reverse=True)
-    top = [d for _s, d in merged[:k_final]]
-    return top
+    return [d for _s, d in merged[:k_final]]
 
 
 def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) -> Tuple[str, List[str]]:
-    """
-    Build a compact CONTEXT section using best paragraphs from top docs.
-    Return (context_text, sources).
-    """
     blocks: List[str] = []
     sources: List[str] = []
     for i, d in enumerate(docs[:max_blocks]):
@@ -212,7 +242,10 @@ def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) 
 # Service
 # ----------------------------
 class ChatService:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+    ):
         self.settings = settings
         self.client = RouterRequestsClient(
             model=settings.model.name,
@@ -222,10 +255,8 @@ class ChatService:
             connect_timeout=10.0,
             read_timeout=60.0,
         )
-        # RAG (singleton)
         self.retriever = get_retriever(settings)
 
-        # Optional cross-encoder (large; disable via env RAG_RERANK=false)
         self.reranker = None
         use_rerank = os.getenv("RAG_RERANK", "true").lower() in ("1", "true", "yes")
         if use_rerank and CrossEncoder is not None:
@@ -237,42 +268,35 @@ class ChatService:
 
     # ---------- RAG core ----------
     def _retrieve_best(self, query: str) -> Tuple[str, List[str]]:
-        """
-        Retrieve many, rerank, and build a compact, high-signal CONTEXT.
-        Returns (context_text, sources).
-        """
         if not self.retriever:
             return "", []
-
         expanded = _expand_query(query)
-        # Retrieve a wider candidate pool, then rerank.
         k_base = max(4, int(self.settings.rag.top_k) * 5)
         try:
-            cands = self.retriever.retrieve(expanded, k=k_base)  # [{'text','source','score'}]
+            cands = self.retriever.retrieve(expanded, k=k_base)
         except Exception as e:
             logger.warning("Retriever failed (%s); falling back to LLM-only.", e)
             return "", []
-
         if not cands:
             return "", []
-
         top = _rerank_docs(cands, query, k_final=max(3, self.settings.rag.top_k), reranker=self.reranker)
         ctx, sources = _build_context_from_docs(top, query, max_blocks=max(3, self.settings.rag.top_k))
         return ctx, sources
 
     def _augment(self, query: str) -> Tuple[str, List[str]]:
-        """
-        Build the final user message (with optional CONTEXT) and return sources.
-        """
         ctx, sources = self._retrieve_best(query)
         if ctx:
+            # IMPORTANT: no trailing "Answer:" label; it often induces echo/repeat.
             user_msg = (
                 f"{ctx}\n\n"
-                "Based only on the context above, answer the question succinctly.\n"
-                f"Question: {query}\nAnswer:"
+                "Based only on the context above, answer the question succinctly in 2–4 sentences.\n"
+                f"Question: {query}"
             )
         else:
-            user_msg = query  # LLM-only fallback
+            user_msg = (
+                "Answer succinctly in 2–4 sentences. Do not repeat yourself.\n"
+                f"Question: {query}"
+            )
         return user_msg, sources
 
     # ---------- Non-stream ----------
@@ -284,15 +308,36 @@ class ChatService:
             max_tokens=self.settings.model.max_new_tokens,
             temperature=self.settings.model.temperature,
         )
+        # Anti-stutter pass (server-side)
+        text = _squash_repetition(text, max_sentences=4, sim_threshold=0.88)
         return text, sources
 
     # ---------- Stream ----------
     def stream_answer(self, query: str):
+        """
+        Wrap the raw stream with a cleaner that suppresses near-duplicate sentences.
+        We keep an internal buffer, clean it, and emit only new delta after cleanup.
+        """
         user_msg, _ = self._augment(query)
-        # SYNC generator yielding token deltas; router wraps in SSE
-        return self.client.chat_stream(
+        raw = self.client.chat_stream(
             SYSTEM_PROMPT,
             user_msg,
             max_tokens=self.settings.model.max_new_tokens,
             temperature=self.settings.model.temperature,
         )
+
+        buf = ""        # what we've collected
+        emitted = ""    # what we've already yielded (cleaned)
+        for token in raw:
+            if not token:
+                continue
+            buf += token
+            cleaned = _squash_repetition(buf, max_sentences=4, sim_threshold=0.88)
+            if len(cleaned) < len(emitted):
+                # shouldn't happen, but guard: reset to cleaned
+                emitted = cleaned
+                continue
+            delta = cleaned[len(emitted):]
+            if delta:
+                emitted = cleaned
+                yield delta

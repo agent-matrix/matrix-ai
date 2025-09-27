@@ -1,3 +1,4 @@
+# app/core/inference/client.py
 import os, json, time, logging
 from typing import Dict, List, Optional, Iterator, Tuple
 
@@ -34,8 +35,15 @@ class RouterRequestsClient:
     Simple requests-only client for HF Router Chat Completions.
     Supports non-streaming (returns str) and streaming (yields token strings).
     """
-    def __init__(self, model: str, fallback: Optional[str] = None, provider: Optional[str] = None,
-                 max_retries: int = 2, connect_timeout: float = 10.0, read_timeout: float = 60.0):
+    def __init__(
+        self,
+        model: str,
+        fallback: Optional[str] = None,
+        provider: Optional[str] = None,
+        max_retries: int = 2,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 60.0,
+    ):
         self.model = model
         self.fallback = fallback if fallback != model else None
         self.provider = provider
@@ -43,14 +51,27 @@ class RouterRequestsClient:
         self.max_retries = max(0, int(max_retries))
         self.timeout = _timeout_tuple(connect_timeout, read_timeout)
 
+        # anti-repeat knobs (safe defaults; ignored if provider doesn't support them)
+        self.frequency_penalty = float(os.getenv("LLM_FREQUENCY_PENALTY", "0.6"))
+        self.presence_penalty  = float(os.getenv("LLM_PRESENCE_PENALTY", "0.05"))
+        self.top_p             = float(os.getenv("LLM_TOP_P", "0.95"))
+
     # -------- Non-stream (single text) --------
-    def chat_nonstream(self, system_prompt: Optional[str], user_text: str,
-                       max_tokens: int, temperature: float) -> str:
+    def chat_nonstream(
+        self,
+        system_prompt: Optional[str],
+        user_text: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
         payload = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
+            "top_p": self.top_p,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
             "stream": False,
         }
         text, ok = self._try_once(payload)
@@ -88,13 +109,21 @@ class RouterRequestsClient:
         return "", False
 
     # -------- Streaming (yield token deltas) --------
-    def chat_stream(self, system_prompt: Optional[str], user_text: str,
-                    max_tokens: int, temperature: float) -> Iterator[str]:
+    def chat_stream(
+        self,
+        system_prompt: Optional[str],
+        user_text: str,
+        max_tokens: int,
+        temperature: float
+    ) -> Iterator[str]:
         payload = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
+            "top_p": self.top_p,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
             "stream": True,
         }
         # primary
@@ -112,7 +141,9 @@ class RouterRequestsClient:
 
     def _stream_once(self, payload: dict) -> Iterator[str]:
         try:
-            with requests.post(ROUTER_URL, headers=self.headers, json=payload, stream=True, timeout=self.timeout) as r:
+            with requests.post(
+                ROUTER_URL, headers=self.headers, json=payload, stream=True, timeout=self.timeout
+            ) as r:
                 if r.status_code >= 400:
                     logger.error("Router stream error %s: %s", r.status_code, r.text)
                     return
@@ -138,7 +169,12 @@ class RouterRequestsClient:
             return
 
     # -------- Planning (non-stream) --------
-    def plan_nonstream(self, system_prompt: str, user_text: str,
-                       max_tokens: int, temperature: float) -> str:
+    def plan_nonstream(
+        self,
+        system_prompt: str,
+        user_text: str,
+        max_tokens: int,
+        temperature: float
+    ) -> str:
         """Use same chat/completions but always non-stream for planning."""
         return self.chat_nonstream(system_prompt, user_text, max_tokens, temperature)
