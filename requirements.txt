@@ -18,3 +18,8 @@ pytest
 ruff
 mypy
 pytest-asyncio
+
+
+requests>=2.32.0
+beautifulsoup4>=4.12.3   # only used if you later add generic HTML URLs
+PyYAML>=6.0.1

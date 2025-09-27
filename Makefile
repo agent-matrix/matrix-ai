@@ -55,6 +55,10 @@ help:
 	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "run" "Run uvicorn (PORT=$(PORT))"
 	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "run-hot" "Run with --reload"
 	@echo
+	@echo "$(BRIGHT_GREEN)RAG / Knowledge Base$(RESET)"
+	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "kb" "Build/refresh KB from GitHub + local docs (writes data/kb.jsonl)"
+	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "kb-force" "Force rebuild KB (deletes existing data/kb.jsonl)"
+	@echo
 	@echo "$(BRIGHT_GREEN)Docker$(RESET)"
 	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "docker-build" "Build local image ($(IMG_NAME))"
 	@printf "  $(BRIGHT_GREEN)%-22s$(RESET) $(DIM_GREEN)%s$(RESET)\n" "docker-run" "Run local container (maps $(PORT))"
@@ -101,6 +105,15 @@ run-hot: install
 	@PORT=$(PORT) $(VENV_DIR)/bin/uvicorn $(APP_MODULE) --host 0.0.0.0 --port $(PORT) --reload
 
 # ---------------------------------------------------------------------------
+# RAG / Knowledge Base
+# ---------------------------------------------------------------------------
+kb: install
+	@PYTHONPATH=. $(PYTHON) scripts/build_kb.py --config configs/rag_sources.yaml --out data/kb.jsonl
+
+kb-force: install
+	@rm -f data/kb.jsonl && PYTHONPATH=. $(PYTHON) scripts/build_kb.py --config configs/rag_sources.yaml --out data/kb.jsonl
+
+# ---------------------------------------------------------------------------
 # Docker
 # ---------------------------------------------------------------------------
 docker-build:
@@ -121,4 +134,4 @@ space-url:
 clean:
 	@rm -rf .venv __pycache__ .pytest_cache .ruff_cache .mypy_cache dist build *.egg-info
 
-.PHONY: help venv install lint fmt test run run-hot docker-build docker-run space-url clean
+.PHONY: help venv install lint fmt test run run-hot kb kb-force docker-build docker-run space-url clean

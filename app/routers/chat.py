@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
+from starlette.concurrency import run_in_threadpool, iterate_in_threadpool
 from starlette.responses import StreamingResponse
 
 from ..deps import get_settings
@@ -27,12 +27,16 @@ class ChatRequest(BaseModel):
     messages: Optional[List[ChatMessage]] = None
 
     def as_text(self) -> str:
-        if self.query: return self.query
-        if self.question: return self.question
-        if self.prompt: return self.prompt
+        if self.query:
+            return self.query
+        if self.question:
+            return self.question
+        if self.prompt:
+            return self.prompt
         if self.messages:
             for m in reversed(self.messages):
-                if m.role.lower() == "user": return m.content
+                if m.role.lower() == "user":
+                    return m.content
             return self.messages[-1].content
         raise ValueError("Body must include 'query'/'question'/'prompt' or 'messages'")
 
@@ -50,7 +54,7 @@ async def chat(req: ChatRequest, settings: Settings = Depends(get_settings)):
         raise HTTPException(status_code=422, detail=str(e))
     svc = ChatService(settings)
     try:
-        # Run the blocking call in a thread pool to avoid freezing the server
+        # run blocking client in a threadpool
         answer, sources = await run_in_threadpool(svc.answer_with_sources, text)
         return ChatResponse(answer=answer, sources=sources)
     except PermissionError as e:
@@ -63,7 +67,6 @@ async def chat(req: ChatRequest, settings: Settings = Depends(get_settings)):
 async def chat_get(query: str = Query(...), settings: Settings = Depends(get_settings)):
     svc = ChatService(settings)
     try:
-        # Run the blocking call in a thread pool
         answer, sources = await run_in_threadpool(svc.answer_with_sources, query)
         return ChatResponse(answer=answer, sources=sources)
     except PermissionError as e:
@@ -72,7 +75,6 @@ async def chat_get(query: str = Query(...), settings: Settings = Depends(get_set
         raise HTTPException(status_code=502, detail=f"Inference error: {e}")
 
 
-# ---------- Streaming (SSE) ----------
 def _sse_line(obj: Any) -> str:
     payload = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
     return f"data: {payload}\n\n"
@@ -80,25 +82,29 @@ def _sse_line(obj: Any) -> str:
 
 @router.get("/chat/stream")
 async def chat_stream(query: str = Query(...), settings: Settings = Depends(get_settings)):
+    """
+    SSE of token deltas. We iterate the sync streaming client in a threadpool
+    so the event loop stays free.
+    """
     svc = ChatService(settings)
 
-    async def gen() -> AsyncIterator[str]:
-        # Anti-buffer padding and initial ping
+    def sync_stream() -> Iterator[str]:
+        # send anti-buffer padding + ping immediately
         yield ":" + (" " * 2048) + "\n\n"
+        yield "retry: 1500\n\n"
         yield "event: ping\ndata: 0\n\n"
-        
+
+        any_tokens = False
         try:
-            # Run the blocking retrieval part in a thread pool, then stream the results
-            stream_generator = await run_in_threadpool(svc.stream_answer, query)
-            any_tokens = False
-            for token in stream_generator:
+            for token in svc.stream_answer(query):
                 if token:
                     any_tokens = True
                     yield _sse_line({"delta": token})
-            
             if not any_tokens:
                 yield _sse_line({"delta": ""})
             yield _sse_line("[DONE]")
+        except GeneratorExit:
+            return
         except Exception as e:
             yield _sse_line({"error": str(e)})
 
@@ -108,7 +114,12 @@ async def chat_stream(query: str = Query(...), settings: Settings = Depends(get_
         "Connection": "keep-alive",
         "Content-Encoding": "identity",
     }
-    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8", headers=headers)
+    # iterate the sync generator in a threadpool (non-blocking for the loop)
+    return StreamingResponse(
+        iterate_in_threadpool(sync_stream()),
+        media_type="text/event-stream; charset=utf-8",
+        headers=headers,
+    )
 
 
 @router.post("/chat/stream")

@@ -32,3 +32,5 @@ Thumbs.db
 # RAG index files
 .faiss/
 /backup
+ copy *.*
+* copy.* 
