@@ -21,9 +21,11 @@ except Exception:  # pragma: no cover
     CrossEncoder = None  # type: ignore
 
 SYSTEM_PROMPT = (
-    "You are MATRIX-AI, a concise, helpful assistant for the Matrix EcoSystem.\n"
-    "Use the provided CONTEXT strictly. If the answer is not supported by context, say you don't know.\n"
-    "Reply in 2–4 short sentences. Do NOT repeat sentences or rephrase the same point multiple times.\n"
+    "You are MATRIX-AI, a concise assistant for the Matrix EcoSystem.\n"
+    "Answer the user's question directly in 2–4 short sentences.\n"
+    "Do NOT restate the question. Do NOT use labels like 'Question:' or 'Answer:'.\n"
+    "Use the provided CONTEXT if present; if the answer is not supported by it, say you don't know.\n"
+    "Do not ask follow-up questions unless the user explicitly asks you to."
 )
 
 # Thread-safe singleton retriever
@@ -55,18 +57,17 @@ def get_retriever(settings: Settings) -> Optional[Retriever]:
 
 
 # ----------------------------
-# Anti-repetition helpers
+# Anti-repetition + de-label helpers
 # ----------------------------
 _SENT_SPLIT = re.compile(r'(?<=[\.\!\?])\s+')
 _NORM = re.compile(r'[^a-z0-9\s]+')
-
+_QA_LINE_RE = re.compile(r'^\s*(question|q|user)\s*:\s*', re.I)
+_ANSWER_PREFIX_RE = re.compile(r'^\s*(answer|a)\s*:\s*', re.I)
 
 def _norm_sentence(s: str) -> str:
     s = s.lower().strip()
     s = _NORM.sub(' ', s)
-    s = re.sub(r'\s+', ' ', s)
-    return s
-
+    return re.sub(r'\s+', ' ', s)
 
 def _jaccard(a: str, b: str) -> float:
     ta = set(a.split())
@@ -75,12 +76,32 @@ def _jaccard(a: str, b: str) -> float:
         return 0.0
     return len(ta & tb) / max(1, len(ta | tb))
 
+def _strip_qa_meta(text: str) -> str:
+    """Drop lines like 'Question: ...' and leading 'Answer:' labels."""
+    lines = text.splitlines()
+    out: List[str] = []
+    for i, l in enumerate(lines):
+        if i == 0:
+            l = _ANSWER_PREFIX_RE.sub('', l).strip()
+        if _QA_LINE_RE.match(l):
+            continue
+        out.append(l)
+    return "\n".join(out).strip()
+
+def _remove_query_echo(text: str, query: str, sim_threshold: float = 0.9) -> str:
+    """Remove sentences that are near-duplicates of the original query."""
+    qn = _norm_sentence(query)
+    parts = _SENT_SPLIT.split(re.sub(r'\s+', ' ', text).strip()) or [text]
+    kept: List[str] = []
+    for s in parts:
+        sn = _norm_sentence(s)
+        if _jaccard(qn, sn) >= sim_threshold:
+            continue
+        kept.append(s.strip())
+    return ' '.join(kept).strip()
 
 def _squash_repetition(text: str, max_sentences: int = 4, sim_threshold: float = 0.88) -> str:
-    """
-    Remove near-duplicate sentences while keeping order.
-    Also collapses whitespace and caps total sentences.
-    """
+    """Remove near-duplicate sentences while keeping order and cap total sentences."""
     t = re.sub(r'\s+', ' ', text).strip()
     if not t:
         return t
@@ -91,37 +112,35 @@ def _squash_repetition(text: str, max_sentences: int = 4, sim_threshold: float =
         ns = _norm_sentence(s)
         if not ns:
             continue
-        is_dup = False
-        for prev in norms:
-            if _jaccard(prev, ns) >= sim_threshold:
-                is_dup = True
-                break
-        if not is_dup:
-            out.append(s.strip())
-            norms.append(ns)
+        if any(_jaccard(prev, ns) >= sim_threshold for prev in norms):
+            continue
+        out.append(s.strip())
+        norms.append(ns)
         if len(out) >= max_sentences:
             break
     return ' '.join(out).strip()
 
+def _clean_answer(text: str, query: str) -> str:
+    t = _strip_qa_meta(text)
+    t = _remove_query_echo(t, query)
+    t = _squash_repetition(t, max_sentences=4, sim_threshold=0.88)
+    return t
+
 
 # ----------------------------
-# RAG utilities (ranking & snippets)
+# RAG helpers (query expansion, ranking, snippets)
 # ----------------------------
 _ALIAS_TABLE: Dict[str, List[str]] = {
     "matrixhub": ["matrix hub", "hub api", "catalog", "registry", "cas"],
     "mcp": ["model context protocol", "manifest", "server manifest", "admin api"],
     "agent-matrix": ["matrix agents", "matrix ecosystem", "matrix toolkit"],
 }
-
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
-
 
 def _normalize(text: str) -> List[str]:
     return [t.lower() for t in _WORD_RE.findall(text)]
 
-
 def _expand_query(q: str) -> str:
-    """Add domain aliases to help the embedding retrieve the right docs."""
     ql = q.lower()
     extras: List[str] = []
     for canon, variants in _ALIAS_TABLE.items():
@@ -130,7 +149,6 @@ def _expand_query(q: str) -> str:
     if extras:
         return q + " | " + " ".join(sorted(set(extras)))
     return q
-
 
 def _keyword_overlap_score(query: str, text: str) -> float:
     q_tokens = set(_normalize(query))
@@ -141,7 +159,6 @@ def _keyword_overlap_score(query: str, text: str) -> float:
     union = len(q_tokens | d_tokens)
     return inter / max(1, union)
 
-
 def _domain_boost(text: str) -> float:
     t = text.lower()
     boost = 0.0
@@ -149,7 +166,6 @@ def _domain_boost(text: str) -> float:
         if term in t:
             boost += 0.05
     return min(boost, 0.25)
-
 
 def _best_paragraphs(text: str, query: str, max_chars: int = 700) -> str:
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -168,12 +184,8 @@ def _best_paragraphs(text: str, query: str, max_chars: int = 700) -> str:
             break
     return "\n".join(picked)
 
-
 def _cross_encoder_scores(
-    model: Optional["CrossEncoder"],
-    query: str,
-    docs: List[Dict],
-    max_pairs: int = 50,
+    model: Optional["CrossEncoder"], query: str, docs: List[Dict], max_pairs: int = 50
 ) -> Optional[List[float]]:
     if not model:
         return None
@@ -184,19 +196,14 @@ def _cross_encoder_scores(
         logger.warning("Cross-encoder scoring failed; continuing without it (%s)", e)
         return None
 
-
 def _rerank_docs(
-    docs: List[Dict],
-    query: str,
-    k_final: int,
-    reranker: Optional["CrossEncoder"] = None,
+    docs: List[Dict], query: str, k_final: int, reranker: Optional["CrossEncoder"] = None
 ) -> List[Dict]:
     if not docs:
         return []
     vec_scores = [float(d.get("score", 0.0)) for d in docs]
     if vec_scores:
-        vmin = min(vec_scores)
-        vmax = max(vec_scores)
+        vmin, vmax = min(vec_scores), max(vec_scores)
         rng = max(1e-6, (vmax - vmin))
         vec_norm = [(v - vmin) / rng for v in vec_scores]
     else:
@@ -219,10 +226,8 @@ def _rerank_docs(
         if ce_norm is not None:
             score = 0.80 * score + 0.20 * ce_norm[i]
         merged.append((score, d))
-
     merged.sort(key=lambda x: x[0], reverse=True)
     return [d for _s, d in merged[:k_final]]
-
 
 def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) -> Tuple[str, List[str]]:
     blocks: List[str] = []
@@ -242,10 +247,7 @@ def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) 
 # Service
 # ----------------------------
 class ChatService:
-    def __init__(
-        self,
-        settings: Settings,
-    ):
+    def __init__(self, settings: Settings):
         self.settings = settings
         self.client = RouterRequestsClient(
             model=settings.model.name,
@@ -265,6 +267,10 @@ class ChatService:
                 logger.info("RAG cross-encoder reranker enabled.")
             except Exception as e:
                 logger.warning("Reranker disabled: %s", e)
+
+        # default inference knobs to reduce repetition
+        self._stop = ["\nQuestion:", "\nUser:", "\nQ:", "\nAnswer:", "\nA:"]
+        self._extra = {"frequency_penalty": 0.2, "presence_penalty": 0.0}
 
     # ---------- RAG core ----------
     def _retrieve_best(self, query: str) -> Tuple[str, List[str]]:
@@ -286,16 +292,16 @@ class ChatService:
     def _augment(self, query: str) -> Tuple[str, List[str]]:
         ctx, sources = self._retrieve_best(query)
         if ctx:
-            # IMPORTANT: no trailing "Answer:" label; it often induces echo/repeat.
+            # No Q:/A: labels — just a clear directive + the raw question
             user_msg = (
                 f"{ctx}\n\n"
-                "Based only on the context above, answer the question succinctly in 2–4 sentences.\n"
-                f"Question: {query}"
+                "Using only the context above, respond concisely (2–4 sentences) to this query.\n"
+                f"{query}"
             )
         else:
             user_msg = (
-                "Answer succinctly in 2–4 sentences. Do not repeat yourself.\n"
-                f"Question: {query}"
+                "Respond concisely (2–4 sentences). Do not restate the question or add labels.\n"
+                f"{query}"
             )
         return user_msg, sources
 
@@ -307,16 +313,16 @@ class ChatService:
             user_msg,
             max_tokens=self.settings.model.max_new_tokens,
             temperature=self.settings.model.temperature,
+            stop=self._stop,
+            extra=self._extra,
         )
-        # Anti-stutter pass (server-side)
-        text = _squash_repetition(text, max_sentences=4, sim_threshold=0.88)
+        text = _clean_answer(text, query)
         return text, sources
 
     # ---------- Stream ----------
     def stream_answer(self, query: str):
         """
-        Wrap the raw stream with a cleaner that suppresses near-duplicate sentences.
-        We keep an internal buffer, clean it, and emit only new delta after cleanup.
+        Stream while cleaning: suppress Q/A labels and near-duplicate lines as they appear.
         """
         user_msg, _ = self._augment(query)
         raw = self.client.chat_stream(
@@ -324,17 +330,19 @@ class ChatService:
             user_msg,
             max_tokens=self.settings.model.max_new_tokens,
             temperature=self.settings.model.temperature,
+            stop=self._stop,
+            extra=self._extra,
         )
 
-        buf = ""        # what we've collected
-        emitted = ""    # what we've already yielded (cleaned)
+        buf = ""      # collected raw
+        emitted = ""  # cleaned we already sent
         for token in raw:
             if not token:
                 continue
             buf += token
-            cleaned = _squash_repetition(buf, max_sentences=4, sim_threshold=0.88)
+            cleaned = _clean_answer(buf, query)
             if len(cleaned) < len(emitted):
-                # shouldn't happen, but guard: reset to cleaned
+                # parser got stricter; resync
                 emitted = cleaned
                 continue
             delta = cleaned[len(emitted):]

@@ -1,6 +1,6 @@
 # app/core/inference/client.py
 import os, json, time, logging
-from typing import Dict, List, Optional, Iterator, Tuple
+from typing import Dict, List, Optional, Iterator, Tuple, Any
 
 import requests
 
@@ -27,7 +27,6 @@ def _mk_messages(system_prompt: Optional[str], user_text: str) -> List[Dict[str,
     return msgs
 
 def _timeout_tuple(connect: float = 10.0, read: float = 60.0) -> Tuple[float, float]:
-    # requests timeout is (connect, read)
     return (connect, read)
 
 class RouterRequestsClient:
@@ -51,11 +50,6 @@ class RouterRequestsClient:
         self.max_retries = max(0, int(max_retries))
         self.timeout = _timeout_tuple(connect_timeout, read_timeout)
 
-        # anti-repeat knobs (safe defaults; ignored if provider doesn't support them)
-        self.frequency_penalty = float(os.getenv("LLM_FREQUENCY_PENALTY", "0.6"))
-        self.presence_penalty  = float(os.getenv("LLM_PRESENCE_PENALTY", "0.05"))
-        self.top_p             = float(os.getenv("LLM_TOP_P", "0.95"))
-
     # -------- Non-stream (single text) --------
     def chat_nonstream(
         self,
@@ -63,17 +57,21 @@ class RouterRequestsClient:
         user_text: str,
         max_tokens: int,
         temperature: float,
+        stop: Optional[List[str]] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> str:
-        payload = {
+        payload: Dict[str, Any] = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
-            "top_p": self.top_p,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
             "stream": False,
         }
+        if stop:
+            payload["stop"] = stop
+        if extra:
+            payload.update(extra)
+
         text, ok = self._try_once(payload)
         if ok:
             return text
@@ -95,7 +93,6 @@ class RouterRequestsClient:
                 if r.status_code >= 400:
                     logger.error("Router error %s: %s", r.status_code, r.text)
                     last_err = RuntimeError(f"{r.status_code}: {r.text}")
-                    # do not hard-spin; brief pause
                     time.sleep(min(1.5 * (attempt + 1), 3.0))
                     continue
                 data = r.json()
@@ -114,18 +111,22 @@ class RouterRequestsClient:
         system_prompt: Optional[str],
         user_text: str,
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        stop: Optional[List[str]] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> Iterator[str]:
-        payload = {
+        payload: Dict[str, Any] = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
-            "top_p": self.top_p,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
             "stream": True,
         }
+        if stop:
+            payload["stop"] = stop
+        if extra:
+            payload.update(extra)
+
         # primary
         ok = False
         for token in self._stream_once(payload):
@@ -141,9 +142,7 @@ class RouterRequestsClient:
 
     def _stream_once(self, payload: dict) -> Iterator[str]:
         try:
-            with requests.post(
-                ROUTER_URL, headers=self.headers, json=payload, stream=True, timeout=self.timeout
-            ) as r:
+            with requests.post(ROUTER_URL, headers=self.headers, json=payload, stream=True, timeout=self.timeout) as r:
                 if r.status_code >= 400:
                     logger.error("Router stream error %s: %s", r.status_code, r.text)
                     return
@@ -157,7 +156,6 @@ class RouterRequestsClient:
                         return
                     try:
                         obj = json.loads(data)
-                        # OpenAI-style: delta tokens
                         delta = obj["choices"][0]["delta"].get("content", "")
                         if delta:
                             yield delta
@@ -169,12 +167,6 @@ class RouterRequestsClient:
             return
 
     # -------- Planning (non-stream) --------
-    def plan_nonstream(
-        self,
-        system_prompt: str,
-        user_text: str,
-        max_tokens: int,
-        temperature: float
-    ) -> str:
-        """Use same chat/completions but always non-stream for planning."""
+    def plan_nonstream(self, system_prompt: str, user_text: str,
+                       max_tokens: int, temperature: float) -> str:
         return self.chat_nonstream(system_prompt, user_text, max_tokens, temperature)
