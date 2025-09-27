@@ -1,6 +1,6 @@
 model:
   name: "HuggingFaceH4/zephyr-7b-beta"
-  fallback: "microsoft/Phi-3-mini-4k-instruct"
+  fallback: "mistralai/Mistral-7B-Instruct-v0.2"
   provider: "featherless-ai"      # NEW: makes "model:provider" for Router
   max_new_tokens: 256
   temperature: 0.2
