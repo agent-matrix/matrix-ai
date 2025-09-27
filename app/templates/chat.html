@@ -2,13 +2,7 @@
 {% block body %}
   <div class="card">
     <h3>Chat — Matrix System 1.0</h3>
-
-    <!-- Messages -->
-    <div id="messages" style="margin-top:14px; display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow:auto;">
-      <!-- Filled by JS from localStorage -->
-    </div>
-
-    <!-- Composer -->
+    <div id="messages" style="margin-top:14px; display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow:auto;"></div>
     <form id="chatForm" style="display:grid; gap:12px; margin-top:14px;">
       <textarea id="question" rows="4" placeholder="Ask anything about Matrix EcoSystem, Guardian, or Hub..."></textarea>
       <div style="display:flex; gap:10px; align-items:center;">
@@ -30,100 +24,189 @@
       box-shadow: 0 4px 16px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,255,156,0.05);
       font-family: "Share Tech Mono", monospace;
     }
-    .user   { align-self: flex-end; background: #062013; color: var(--text); border-color: #0e2e1a; }
-    .bot    { align-self: flex-start; background: #05140c; color: var(--text); border-color: #0c2416; }
-    .meta   { font-size: 11px; opacity: .6; margin-top: 2px; }
+    .user { align-self: flex-end; background: #062013; color: var(--text); border-color: #0e2e1a; }
+    .bot  { align-self: flex-start; background: #05140c; color: var(--text); border-color: #0c2416; }
+    .meta { font-size: 11px; opacity: .6; margin-top: 2px; }
+    .caret {
+      display: inline-block;
+      width: 8px; height: 1em; vertical-align: bottom;
+      background: var(--matrix);
+      margin-left: 2px;
+      box-shadow: 0 0 6px rgba(0,255,156,0.5);
+      animation: blink 1s steps(1) infinite;
+    }
+    @keyframes blink { 0%, 49% {opacity: 1;} 50%, 100% {opacity: 0;} }
   </style>
 
   <script>
-    (function () {
-      const KEY = 'matrix_ai_chat_history';
-      const messagesEl = document.getElementById('messages');
-      const form = document.getElementById('chatForm');
-      const input = document.getElementById('question');
-      const sendBtn = document.getElementById('sendBtn');
-      const clearBtn = document.getElementById('clearBtn');
+  (function () {
+    const KEY = 'matrix_ai_chat_history';
+    const messagesEl = document.getElementById('messages');
+    const form = document.getElementById('chatForm');
+    const input = document.getElementById('question');
+    const sendBtn = document.getElementById('sendBtn');
+    const clearBtn = document.getElementById('clearBtn');
 
-      function loadHistory() {
-        try {
-          return JSON.parse(localStorage.getItem(KEY) || '[]');
-        } catch { return []; }
+    // Enter to send, Shift+Enter for newline
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendBtn.click();
       }
-      function saveHistory(hist) {
-        localStorage.setItem(KEY, JSON.stringify(hist.slice(-100))); // cap
-      }
-      function msgEl(role, text, ts) {
-        const wrap = document.createElement('div');
-        wrap.style.display = 'flex';
-        wrap.style.flexDirection = 'column';
-        wrap.style.gap = '2px';
-        const b = document.createElement('div');
-        b.className = 'bubble ' + (role === 'user' ? 'user' : 'bot');
-        b.textContent = text;
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = new Date(ts).toLocaleString();
-        wrap.appendChild(b);
-        wrap.appendChild(meta);
-        return wrap;
-      }
-      function render(hist) {
-        messagesEl.innerHTML = '';
-        hist.forEach(m => messagesEl.appendChild(msgEl(m.role, m.text, m.ts)));
+    });
+
+    function loadHistory(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch{ return []; } }
+    function saveHistory(h){ localStorage.setItem(KEY, JSON.stringify(h.slice(-100))); }
+
+    function block(role, text, ts){
+      const wrap = document.createElement('div');
+      wrap.style.display='flex'; wrap.style.flexDirection='column'; wrap.style.gap='2px';
+      const b = document.createElement('div'); b.className='bubble ' + (role==='user'?'user':'bot'); b.textContent=text;
+      const meta = document.createElement('div'); meta.className='meta'; meta.textContent=new Date(ts).toLocaleString();
+      wrap.appendChild(b); wrap.appendChild(meta);
+      return {wrap,bubble:b,meta};
+    }
+    function render(hist){
+      messagesEl.innerHTML=''; hist.forEach(m=>messagesEl.appendChild(block(m.role,m.text,m.ts).wrap));
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    function append(role,text){
+      const el = block(role,text,Date.now()); messagesEl.appendChild(el.wrap);
+      messagesEl.scrollTop = messagesEl.scrollHeight; return el;
+    }
+
+    let history = loadHistory();
+    if(history.length===0){
+      history.push({role:'bot',text:'Welcome to MATRIX-AI. Ask me about Matrix System 1.0, Guardian, or the Hub.',ts:Date.now()});
+      saveHistory(history);
+    }
+    render(history);
+
+    clearBtn.addEventListener('click', ()=>{
+      history = []; saveHistory(history); render(history);
+    });
+
+    form.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const q = (input.value||'').trim(); if(!q) return;
+      input.value=''; sendBtn.disabled=true;
+
+      // 1) user message
+      history.push({role:'user',text:q,ts:Date.now()}); saveHistory(history); render(history);
+
+      // 2) live bot bubble + caret
+      const live = append('bot','');
+      const caret = document.createElement('span'); caret.className='caret'; live.bubble.appendChild(caret);
+
+      let gotChunk = false, finished = false, streamed = '';
+
+      function onChunk(delta){
+        gotChunk = true;
+        streamed += delta || '';
+        try { live.bubble.removeChild(caret); } catch {}
+        live.bubble.textContent = streamed;
+        live.bubble.appendChild(caret);
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
-
-      let history = loadHistory();
-      if (history.length === 0) {
-        // seed a friendly welcome
-        history.push({ role: 'bot', text: 'Welcome to MATRIX-AI. Ask me about Matrix System 1.0, Guardian, or the Hub.', ts: Date.now() });
-        saveHistory(history);
+      function finalize(text){
+        finished = true;
+        try { live.bubble.removeChild(caret); } catch {}
+        live.bubble.textContent = text;
+        history.push({role:'bot',text,ts:Date.now()}); saveHistory(history); render(history);
+        sendBtn.disabled=false;
       }
-      render(history);
 
-      clearBtn.addEventListener('click', () => {
-        history = [];
-        saveHistory(history);
-        render(history);
-      });
+      // -------- Strategy A: SSE via EventSource --------
+      const sseUrl = window.location.origin.replace(/\/+$/,'') + '/v1/chat/stream?ts=' + Date.now() + '&query=' + encodeURIComponent(q);
+      let es = null;
+      let fallbackTimer = null;
 
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const q = (input.value || '').trim();
-        if (!q) return;
-        input.value = '';
-        sendBtn.disabled = true;
+      function closeES(){ try { es && es.close(); } catch {} es = null; }
 
-        // append user message
-        const userMsg = { role: 'user', text: q, ts: Date.now() };
-        history.push(userMsg);
-        saveHistory(history);
-        render(history);
-
-        try {
-          const port = (window.location.port || (window.location.href.includes('/+/') ? '' : ''));
-          const base = window.location.origin; // same origin (HF proxies handle it)
-          const r = await fetch(base.replace(/\/+$/, '') + '/v1/chat', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ query: q })
-          });
+      async function doNonStream() {
+        try{
+          const r = await fetch('/v1/chat', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({query:q})});
           let answer = '(no answer)';
-          if (r.ok) {
-            const data = await r.json();
-            answer = (data && (data.answer || data.response || JSON.stringify(data))) || answer;
-          } else {
-            answer = `HTTP ${r.status}`;
-          }
-          history.push({ role: 'bot', text: answer, ts: Date.now() });
-        } catch (err) {
-          history.push({ role: 'bot', text: 'Error: ' + (err && err.message ? err.message : String(err)), ts: Date.now() });
-        } finally {
-          saveHistory(history);
-          render(history);
-          sendBtn.disabled = false;
+          if(r.ok){ const data=await r.json(); answer = (data && (data.answer||data.response||JSON.stringify(data)))||answer; }
+          else { answer = `HTTP ${r.status}`; }
+          streamed = answer;
+        }catch(err){
+          streamed = 'Error: ' + (err && err.message ? err.message : String(err));
+        }finally{
+          finalize(streamed);
         }
-      });
-    })();
+      }
+
+      async function doFetchStream() {
+        try {
+          const resp = await fetch('/v1/chat/stream', {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({query:q})
+          });
+          if (!resp.ok || !resp.body) throw new Error('stream HTTP ' + resp.status);
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let buf = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split(/\r?\n/);
+            buf = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue;
+              const data = line.slice(5).trim();
+              if (data === '[DONE]') { finalize(streamed); return; }
+              try {
+                const obj = JSON.parse(data);
+                if (obj.error) { finalize('Error: ' + obj.error); return; }
+                if ('delta' in obj) onChunk(obj.delta || '');
+              } catch {
+                onChunk(data);
+              }
+            }
+          }
+          finalize(streamed);
+        } catch (err) {
+          // last fallback: non-stream
+          await doNonStream();
+        }
+      }
+
+      function startSSE() {
+        if (!window.EventSource) { doFetchStream(); return; }
+        es = new EventSource(sseUrl);
+        fallbackTimer = setTimeout(() => {
+          if (!gotChunk && !finished) {
+            closeES();
+            doFetchStream();
+          }
+        }, 1500);
+
+        es.onmessage = (ev) => {
+          if (!ev.data) return;
+          if (ev.data === "[DONE]") {
+            clearTimeout(fallbackTimer); closeES(); finalize(streamed); return;
+          }
+          try {
+            const obj = JSON.parse(ev.data);
+            if (obj.error) { clearTimeout(fallbackTimer); closeES(); finalize('Error: ' + obj.error); return; }
+            if ('delta' in obj) onChunk(obj.delta || '');
+          } catch {
+            onChunk(ev.data);
+          }
+        };
+        es.onerror = () => {
+          if (!gotChunk && !finished) {
+            clearTimeout(fallbackTimer);
+            closeES();
+            doFetchStream();
+          }
+        };
+      }
+      startSSE();
+    });
+  })();
   </script>
 {% endblock %}

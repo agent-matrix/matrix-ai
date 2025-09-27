@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any, Iterator
+import json, time
+
 from ..deps import get_settings
 from ..core.config import Settings
 from ..services.chat_service import ChatService
@@ -25,8 +28,7 @@ class ChatRequest(BaseModel):
             for m in reversed(self.messages):
                 if m.role.lower() == "user":
                     return m.content
-            if self.messages:
-                return self.messages[-1].content
+            return self.messages[-1].content
         raise ValueError("Body must include 'query'/'question'/'prompt' or 'messages'")
 
 class ChatResponse(BaseModel):
@@ -43,7 +45,6 @@ async def chat(req: ChatRequest, settings: Settings = Depends(get_settings)):
         answer = await svc.answer(text)
         return ChatResponse(answer=answer)
     except PermissionError as e:
-        # Gated model / no license accepted for token
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Inference error: {e}")
@@ -58,3 +59,54 @@ async def chat_get(query: str = Query(...), settings: Settings = Depends(get_set
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Inference error: {e}")
+
+# ---------- Streaming (SSE) ----------
+def _sse_line(obj: Any) -> str:
+    payload = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
+    return f"data: {payload}\n\n"
+
+@router.get("/chat/stream")
+async def chat_stream(query: str = Query(...), settings: Settings = Depends(get_settings)):
+    """
+    SSE stream of token deltas: emits {"delta": "..."} chunks, then final [DONE].
+    """
+    svc = ChatService(settings)
+
+    def gen() -> Iterator[str]:
+        # Anti-buffer padding & immediate ping to force first paint
+        yield ":" + (" " * 2048) + "\n\n"
+        yield "event: ping\ndata: 0\n\n"
+        any_tokens = False
+        try:
+            for token in svc.stream_answer(query):
+                if token:
+                    any_tokens = True
+                    yield _sse_line({"delta": token})
+            if not any_tokens:
+                yield _sse_line({"delta": ""})
+            yield _sse_line("[DONE]")
+        except GeneratorExit:
+            return
+        except Exception as e:
+            try:
+                yield _sse_line({"error": str(e)})
+            except Exception:
+                return
+
+    headers = {
+        # Critical for proxies/browsers
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",          # Nginx
+        "Connection": "keep-alive",
+        "Content-Encoding": "identity",     # Prevents Starlette gzip from buffering SSE
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8", headers=headers)
+
+@router.post("/chat/stream")
+async def chat_stream_post(req: ChatRequest, settings: Settings = Depends(get_settings)):
+    try:
+        q = req.as_text()
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # Reuse GET logic to keep one code path
+    return await chat_stream(query=q, settings=settings)
