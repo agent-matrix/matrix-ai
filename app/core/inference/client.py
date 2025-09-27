@@ -1,6 +1,6 @@
 # app/core/inference/client.py
 import os, json, time, logging
-from typing import Dict, List, Optional, Iterator, Tuple, Any
+from typing import Dict, List, Optional, Iterator, Tuple
 
 import requests
 
@@ -34,15 +34,8 @@ class RouterRequestsClient:
     Simple requests-only client for HF Router Chat Completions.
     Supports non-streaming (returns str) and streaming (yields token strings).
     """
-    def __init__(
-        self,
-        model: str,
-        fallback: Optional[str] = None,
-        provider: Optional[str] = None,
-        max_retries: int = 2,
-        connect_timeout: float = 10.0,
-        read_timeout: float = 60.0,
-    ):
+    def __init__(self, model: str, fallback: Optional[str] = None, provider: Optional[str] = None,
+                 max_retries: int = 2, connect_timeout: float = 10.0, read_timeout: float = 60.0):
         self.model = model
         self.fallback = fallback if fallback != model else None
         self.provider = provider
@@ -58,19 +51,22 @@ class RouterRequestsClient:
         max_tokens: int,
         temperature: float,
         stop: Optional[List[str]] = None,
-        extra: Optional[Dict[str, Any]] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> str:
-        payload: Dict[str, Any] = {
+        payload = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
-            "temperature": float(temperature),
+            "temperature": float(max(0.0, temperature)),
             "max_tokens": int(max_tokens),
             "stream": False,
         }
         if stop:
             payload["stop"] = stop
-        if extra:
-            payload.update(extra)
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = float(frequency_penalty)
+        if presence_penalty is not None:
+            payload["presence_penalty"] = float(presence_penalty)
 
         text, ok = self._try_once(payload)
         if ok:
@@ -113,19 +109,22 @@ class RouterRequestsClient:
         max_tokens: int,
         temperature: float,
         stop: Optional[List[str]] = None,
-        extra: Optional[Dict[str, Any]] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> Iterator[str]:
-        payload: Dict[str, Any] = {
+        payload = {
             "model": _model_with_provider(self.model, self.provider),
             "messages": _mk_messages(system_prompt, user_text),
-            "temperature": float(temperature),
+            "temperature": float(max(0.0, temperature)),
             "max_tokens": int(max_tokens),
             "stream": True,
         }
         if stop:
             payload["stop"] = stop
-        if extra:
-            payload.update(extra)
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = float(frequency_penalty)
+        if presence_penalty is not None:
+            payload["presence_penalty"] = float(presence_penalty)
 
         # primary
         ok = False
