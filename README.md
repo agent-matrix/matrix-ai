@@ -1,3 +1,12 @@
+---
+title: matrix-ai
+emoji: 🧠
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # matrix-ai
 
 **matrix-ai** is the AI planning microservice for the Matrix EcoSystem. It generates **short, low‑risk, auditable remediation plans** from a compact health context provided by **Matrix Guardian**. The service is designed for **Hugging Face Spaces** or **Inference Endpoints**, but also runs locally.
