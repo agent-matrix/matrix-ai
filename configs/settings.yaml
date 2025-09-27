@@ -1,6 +1,8 @@
 model:
-  name: "meta-llama/Meta-Llama-3-8B-Instruct"
-  fallback: "mistralai/Mistral-7B-Instruct-v0.2"
+  name: "HuggingFaceH4/zephyr-7b-beta" # good balance of speed and capability
+  #name: "mistralai/Mistral-7B-Instruct-v0.2" # capable, open, but large
+  #fallback: "HuggingFaceH4/zephyr-7b-beta" # smaller, faster, but less capable
+  fallback: "microsoft/Phi-3-mini-4k-instruct" # smaller, faster, but less capable
   max_new_tokens: 256
   temperature: 0.2
 

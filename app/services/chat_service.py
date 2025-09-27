@@ -1,4 +1,3 @@
-# app/services/chat_service.py
 from __future__ import annotations
 from ..core.config import Settings
 from ..core.inference.client import HFClient
@@ -11,7 +10,10 @@ SYSTEM_PROMPT = (
 class ChatService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = HFClient(model=settings.model.name)
+        self.client = HFClient(
+            model=settings.model.name,
+            fallback=settings.model.fallback,
+        )
 
     async def answer(self, query: str) -> str:
         prompt = f"{SYSTEM_PROMPT}\n\nUser: {query}\nAssistant:"
