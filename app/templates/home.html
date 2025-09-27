@@ -1,8 +1,169 @@
 {% extends "base.html" %}
 {% block body %}
-  <div class="card">
-    <h2>Welcome to <em>matrix-ai</em></h2>
-    <p>This service generates short, low-risk remediation plans for Matrix-Guardian and offers a simple chat about Matrix System 1.0.</p>
-    <p>Use the navigation to explore the Chat and Dev tabs.</p>
+  <div class="card" style="padding:28px">
+    <div class="hero" style="display:grid; gap:14px;">
+      <div class="badge">Stage-1 • Observe + Assist</div>
+      <h1 style="margin:0">MATRIX-AI</h1>
+      <p class="lede">
+        The AI planning microservice for the Matrix EcoSystem. It generates
+        <strong>short, low-risk, auditable remediation plans</strong> for Matrix-Guardian
+        and offers a compact, RAG-assisted chat over Matrix docs.
+      </p>
+
+      <div class="cta">
+        <a class="btn" href="/chat">Open Chat</a>
+        <a class="btn ghost" href="/dev">Plan Playground</a>
+        <!-- Removed API Docs button; Home is now the docs landing -->
+      </div>
+
+      <div class="meta">
+        <span class="chip">Service: matrix-ai</span>
+        <span class="chip">Version: {{ request.app.version }}</span>
+        <span class="chip">API: /v1/plan · /v1/chat</span>
+      </div>
+    </div>
   </div>
+
+  <div class="grid">
+    <div class="card feature">
+      <div class="icon">🛠️</div>
+      <h3>Plan Engine</h3>
+      <p>
+        Given a compact health context from <em>Matrix-Guardian</em>, matrix-ai produces
+        a JSON plan with bounded steps, a risk label, and a brief rationale. Strict schema,
+        PII redaction, short timeouts, and retries ensure safe operation.
+      </p>
+      <div class="list">
+        <div>• Strict JSON schema (plan_id, steps[], risk, explanation)</div>
+        <div>• Bounded tokens, low temperature</div>
+        <div>• Robust parsing + safe fallback</div>
+      </div>
+    </div>
+
+    <div class="card feature">
+      <div class="icon">📚</div>
+      <h3>RAG Assist</h3>
+      <p>
+        Lightweight retrieval over curated Matrix docs. We assemble a compact CONTEXT
+        and instruct the model to answer <em>only</em> from those facts (or say it doesn’t know).
+      </p>
+      <div class="list">
+        <div>• FAISS + embeddings (MiniLM)</div>
+        <div>• Optional re-ranking for accuracy</div>
+        <div>• Sources returned with answers</div>
+      </div>
+    </div>
+
+    <div class="card feature">
+      <div class="icon">🛡️</div>
+      <h3>Guardrails</h3>
+      <p>
+        Production-safe defaults: JSON logs, request IDs, in-memory rate-limit,
+        idempotent writes (where applicable), and ETag support for caches.
+      </p>
+      <div class="list">
+        <div>• PII redaction pre-inference</div>
+        <div>• 429 limits, 5xx propagation</div>
+        <div>• Trace-friendly logging</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card arch">
+    <h3 style="margin-top:0">How it fits</h3>
+    <div class="diagram">
+      <div class="lane">
+        <div class="box svc">Matrix-Guardian</div>
+        <div class="arrow">/v1/plan</div>
+        <div class="box ai">matrix-ai</div>
+        <div class="arrow">HF Router</div>
+        <div class="box hf">Upstream LLM</div>
+      </div>
+      <div class="lane">
+        <div class="box user">Operators</div>
+        <div class="arrow">/v1/chat</div>
+        <div class="box ai">matrix-ai</div>
+        <div class="arrow">RAG</div>
+        <div class="box kb">KB (FAISS)</div>
+      </div>
+    </div>
+
+    <div class="quick">
+      <details>
+        <summary>Endpoints</summary>
+        <pre><code>POST /v1/plan   # JSON plan for Guardian (non-stream)
+POST /v1/chat   # Q&A over Matrix docs (RAG, stream or non-stream)
+GET  /healthz   # Liveness</code></pre>
+      </details>
+      <details>
+        <summary>Quick start (local)</summary>
+        <pre><code># 1) Export your token (or use Space Secret)
+export HF_TOKEN="hf_xxx"
+
+# 2) Run the service
+uvicorn app.main:app --host 0.0.0.0 --port 7860
+
+# 3) Try chat (non-stream)
+curl -s -X POST localhost:7860/v1/chat \
+  -H 'content-type: application/json' \
+  -d '{"query":"What is MatrixHub?"}' | jq
+
+# 4) Try plan
+curl -s -X POST localhost:7860/v1/plan \
+  -H 'content-type: application/json' \
+  -d '{"mode":"plan","context":{"entity_uid":"matrix-ai"},"constraints":{"max_steps":3,"risk":"low"}}' | jq</code></pre>
+      </details>
+    </div>
+  </div>
+
+  <style>
+    .hero .badge{
+      display:inline-block; font-size:12px; letter-spacing:.06em;
+      color:#002f1b; background:linear-gradient(180deg,#00ff9c,#00c97e);
+      border-radius:999px; padding:6px 10px; font-weight:700;
+      box-shadow:0 6px 24px rgba(0,255,156,.25);
+    }
+    h1 { font-family:"Share Tech Mono", monospace; color:var(--matrix); letter-spacing:.03em; }
+    .lede { font-size:16px; opacity:.95; max-width:64ch; }
+    .cta { display:flex; gap:10px; margin-top:4px; flex-wrap:wrap; }
+    .btn {
+      display:inline-block; text-decoration:none; padding:10px 14px; border-radius:12px;
+      font-weight:700; font-family:"Share Tech Mono", monospace; letter-spacing:.03em;
+      background:linear-gradient(180deg,#00ff9c,#00c97e); color:#032215;
+      box-shadow:0 6px 20px rgba(0,255,156,.25);
+    }
+    .btn.ghost {
+      background:#0b1a12; color:var(--muted); border:1px solid var(--border);
+      box-shadow:none;
+    }
+    .btn:hover { filter:brightness(1.05); }
+    .meta { display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
+    .chip {
+      font-size:12px; border:1px solid var(--border); border-radius:999px;
+      padding:4px 10px; background:#061006a6;
+    }
+    .grid {
+      margin:22px auto; display:grid; gap:16px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .feature .icon { font-size:22px; margin-bottom:4px; }
+    .feature .list { margin-top:6px; opacity:.9; font-size:14px; display:grid; gap:4px; }
+    .arch { margin-top:18px; }
+    .diagram { margin-top:8px; display:grid; gap:8px; }
+    .lane { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .box {
+      padding:8px 10px; border-radius:10px; border:1px solid var(--border);
+      background:#020a04; font-family:"Share Tech Mono", monospace; font-size:13px;
+    }
+    .svc { box-shadow:0 0 0 1px rgba(0,255,156,.08); }
+    .ai  { box-shadow:0 0 0 1px rgba(0,255,156,.12); }
+    .hf  { box-shadow:0 0 0 1px rgba(0,255,156,.08); }
+    .user{ box-shadow:0 0 0 1px rgba(0,255,156,.08); }
+    .kb  { box-shadow:0 0 0 1px rgba(0,255,156,.08); }
+    .arrow { opacity:.7; font-family:"Share Tech Mono", monospace; }
+    .quick { margin-top:8px; display:grid; gap:8px; }
+    details { border:1px solid var(--border); border-radius:12px; padding:8px 10px; background:#06100680; }
+    details summary { cursor:pointer; user-select:none; color:var(--muted); }
+    pre { margin:8px 0 0; }
+  </style>
 {% endblock %}

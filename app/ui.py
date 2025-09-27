@@ -15,6 +15,10 @@ async def home_redirect():
     # Default to the Chat page
     return RedirectResponse(url="/chat", status_code=302)
 
+@router.get("/home", response_class=HTMLResponse, include_in_schema=False)
+async def home_alias(request: Request):
+    return templates.TemplateResponse("home.html", {"request": request})
+
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_get(request: Request):
     return templates.TemplateResponse("chat.html", {"request": request, "answer": None})
