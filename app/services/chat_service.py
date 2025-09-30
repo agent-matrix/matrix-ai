@@ -6,10 +6,10 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Iterable, Generator
 
 from ..core.config import Settings
-from ..core.inference.client import RouterRequestsClient
+from ..core.inference.client import ChatClient  # ← multi-provider cascade (GROQ→Gemini→HF)
 from ..core.rag.retriever import Retriever
 
 logger = logging.getLogger(__name__)
@@ -33,11 +33,18 @@ STOP_SEQS: List[str] = [
     "\nUser:", "User:", "\nAssistant:", "Assistant:"
 ]
 
+# ----------------------------
 # Thread-safe singleton retriever
+# ----------------------------
 _retriever_instance: Optional[Retriever] = None
 _retriever_lock = threading.Lock()
 
+
 def get_retriever(settings: Settings) -> Optional[Retriever]:
+    """
+    Initialize and cache the Retriever once (thread-safe).
+    If no KB is present, returns None and logs that we run LLM-only.
+    """
     global _retriever_instance
     if _retriever_instance is not None:
         return _retriever_instance
@@ -58,9 +65,11 @@ def get_retriever(settings: Settings) -> Optional[Retriever]:
             _retriever_instance = None
     return _retriever_instance
 
+
 # ---------- anti-repetition / anti-label helpers ----------
 _SENT_SPLIT = re.compile(r'(?<=[\.\!\?])\s+')
 _NORM = re.compile(r'[^a-z0-9\s]+')
+
 
 def _norm_sentence(s: str) -> str:
     s = s.lower().strip()
@@ -68,12 +77,14 @@ def _norm_sentence(s: str) -> str:
     s = re.sub(r'\s+', ' ', s)
     return s
 
+
 def _jaccard(a: str, b: str) -> float:
     ta = set(a.split())
     tb = set(b.split())
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / max(1, len(ta | tb))
+
 
 def _squash_repetition(text: str, max_sentences: int = 4, sim_threshold: float = 0.88) -> str:
     t = re.sub(r'\s+', ' ', text).strip()
@@ -94,9 +105,11 @@ def _squash_repetition(text: str, max_sentences: int = 4, sim_threshold: float =
             break
     return ' '.join(out).strip()
 
+
 # Strip common label patterns
 _LABEL_PREFIX = re.compile(r'^\s*(?:Answer:|A:)\s*', re.IGNORECASE)
 _LABEL_INLINE_Q = re.compile(r'\s*(?:Question:|Q:)\s*$', re.IGNORECASE)
+
 
 def _strip_labels(text: str) -> str:
     s = _LABEL_PREFIX.sub('', text)
@@ -106,6 +119,7 @@ def _strip_labels(text: str) -> str:
     s = re.sub(r'\b(?:Answer:|A:)\s*', '', s, flags=re.IGNORECASE)
     return s.strip()
 
+
 # ---------- RAG utilities (ranking & snippets) ----------
 _ALIAS_TABLE: Dict[str, List[str]] = {
     "matrixhub": ["matrix hub", "hub api", "catalog", "registry", "cas"],
@@ -114,8 +128,10 @@ _ALIAS_TABLE: Dict[str, List[str]] = {
 }
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
+
 def _normalize(text: str) -> List[str]:
     return [t.lower() for t in _WORD_RE.findall(text)]
+
 
 def _expand_query(q: str) -> str:
     ql = q.lower()
@@ -127,6 +143,7 @@ def _expand_query(q: str) -> str:
         return q + " | " + " ".join(sorted(set(extras)))
     return q
 
+
 def _keyword_overlap_score(query: str, text: str) -> float:
     q_tokens = set(_normalize(query))
     d_tokens = set(_normalize(text))
@@ -136,6 +153,7 @@ def _keyword_overlap_score(query: str, text: str) -> float:
     union = len(q_tokens | d_tokens)
     return inter / max(1, union)
 
+
 def _domain_boost(text: str) -> float:
     t = text.lower()
     boost = 0.0
@@ -143,6 +161,7 @@ def _domain_boost(text: str) -> float:
         if term in t:
             boost += 0.05
     return min(boost, 0.25)
+
 
 def _best_paragraphs(text: str, query: str, max_chars: int = 700) -> str:
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -161,6 +180,7 @@ def _best_paragraphs(text: str, query: str, max_chars: int = 700) -> str:
             break
     return "\n".join(picked)
 
+
 def _cross_encoder_scores(model: Optional["CrossEncoder"], query: str, docs: List[Dict], max_pairs: int = 50) -> Optional[List[float]]:
     if not model:
         return None
@@ -170,6 +190,7 @@ def _cross_encoder_scores(model: Optional["CrossEncoder"], query: str, docs: Lis
     except Exception as e:
         logger.warning("Cross-encoder scoring failed; continuing without it (%s)", e)
         return None
+
 
 def _rerank_docs(docs: List[Dict], query: str, k_final: int, reranker: Optional["CrossEncoder"] = None) -> List[Dict]:
     if not docs:
@@ -203,6 +224,7 @@ def _rerank_docs(docs: List[Dict], query: str, k_final: int, reranker: Optional[
     merged.sort(key=lambda x: x[0], reverse=True)
     return [d for _s, d in merged[:k_final]]
 
+
 def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) -> Tuple[str, List[str]]:
     blocks: List[str] = []
     sources: List[str] = []
@@ -216,22 +238,33 @@ def _build_context_from_docs(docs: List[Dict], query: str, max_blocks: int = 4) 
     prelude = "CONTEXT (use only these facts; if missing, say you don't know):"
     return prelude + "\n\n" + "\n\n".join(blocks), sources
 
+
 # ----------------------------
 # Service
 # ----------------------------
 class ChatService:
+    """
+    High-level Q&A service with optional RAG. Uses the multi-provider ChatClient,
+    honoring provider_order from configs/settings.yaml (e.g., groq → gemini → router).
+    """
+
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = RouterRequestsClient(
-            model=settings.model.name,
-            fallback=settings.model.fallback,
-            provider=getattr(settings.model, "provider", None),
-            max_retries=2,
-            connect_timeout=10.0,
-            read_timeout=60.0,
-        )
+
+        # Log backend + provider order for traceability
+        try:
+            order = getattr(settings, "provider_order", ["router"])
+            logger.info("Chat backend=%s | Provider order=%s", settings.chat_backend, order)
+        except Exception:
+            logger.info("Chat backend=%s", getattr(settings, "chat_backend", "unknown"))
+
+        # Use the multi-provider cascade: GROQ → Gemini → HF Router
+        self.client = ChatClient(settings)
+
+        # RAG components
         self.retriever = get_retriever(settings)
 
+        # Optional cross-encoder reranker
         self.reranker = None
         use_rerank = os.getenv("RAG_RERANK", "true").lower() in ("1", "true", "yes")
         if use_rerank and CrossEncoder is not None:
@@ -272,44 +305,69 @@ class ChatService:
 
     # ---------- Non-stream ----------
     def answer_with_sources(self, query: str) -> Tuple[str, List[str]]:
+        """
+        Returns a concise answer and the list of source identifiers (if any).
+        Uses the cascade in non-streaming mode (always returns a string).
+        """
         user_msg, sources = self._augment(query)
-        text = self.client.chat_nonstream(
-            SYSTEM_PROMPT,
-            user_msg,
-            max_tokens=self.settings.model.max_new_tokens,
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+        text = self.client.chat(
+            messages,
             temperature=self.settings.model.temperature,
-            stop=STOP_SEQS,
-            frequency_penalty=0.2,  # mild anti-repeat
-            presence_penalty=0.0,
+            max_new_tokens=self.settings.model.max_new_tokens,
+            stream=False,
         )
+        # Post-process for brevity and cleanliness
         text = _strip_labels(_squash_repetition(text, max_sentences=4, sim_threshold=0.88))
         return text, sources
 
     # ---------- Stream ----------
-    def stream_answer(self, query: str):
+    def stream_answer(self, query: str) -> Iterable[str]:
+        """
+        Yields chunks of text as they are produced.
+        On GROQ, this is true token streaming; on Gemini/HF, it may yield once.
+        """
         user_msg, _ = self._augment(query)
-        raw = self.client.chat_stream(
-            SYSTEM_PROMPT,
-            user_msg,
-            max_tokens=self.settings.model.max_new_tokens,
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+        raw = self.client.chat(
+            messages,
             temperature=self.settings.model.temperature,
-            stop=STOP_SEQS,
-            frequency_penalty=0.2,
-            presence_penalty=0.0,
+            max_new_tokens=self.settings.model.max_new_tokens,
+            stream=True,
         )
+
+        # Normalize to a generator of strings
+        def _iter_chunks(gen_or_text: Generator[str, None, None] | str) -> Generator[str, None, None]:
+            if isinstance(gen_or_text, str):
+                yield gen_or_text
+            else:
+                for chunk in gen_or_text:
+                    if chunk:
+                        yield chunk
 
         buf = ""
         emitted = ""
-        for token in raw:
-            if not token:
-                continue
-            buf += token
-            cleaned = _squash_repetition(buf, max_sentences=4, sim_threshold=0.88)
-            cleaned = _strip_labels(cleaned)
-            if len(cleaned) < len(emitted):
-                emitted = cleaned
-                continue
-            delta = cleaned[len(emitted):]
-            if delta:
-                emitted = cleaned
-                yield delta
+        try:
+            for token in _iter_chunks(raw):
+                buf += token
+                cleaned = _squash_repetition(buf, max_sentences=4, sim_threshold=0.88)
+                cleaned = _strip_labels(cleaned)
+                if len(cleaned) < len(emitted):
+                    # Cleaning shortened text; wait for more tokens
+                    continue
+                delta = cleaned[len(emitted):]
+                if delta:
+                    emitted = cleaned
+                    yield delta
+        except Exception as e:
+            logger.error("Streaming error: %s", e)
+            # Best-effort final flush
+            final = _strip_labels(_squash_repetition(buf, max_sentences=4, sim_threshold=0.88)).strip()
+            if final and final != emitted:
+                yield final[len(emitted):]
