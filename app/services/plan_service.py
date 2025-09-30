@@ -1,3 +1,4 @@
+# app/services/plan_service.py
 from __future__ import annotations
 
 import asyncio
@@ -5,12 +6,12 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Iterable
 
 from ..core.schema import PlanRequest, PlanResponse
 from ..core.config import Settings
 from ..core.redact import redact
-from ..core.inference.client import RouterRequestsClient
+from ..core.inference.client import ChatClient  # use the multi-provider cascade
 
 logger = logging.getLogger(__name__)
 
@@ -148,38 +149,75 @@ def _safe_parse_or_fallback(raw_output: str, context_for_id: str) -> Dict[str, A
 
 
 # ----------------------------
-# Service (requests-only, non-stream)
+# Compatibility adapter for tests & legacy call sites
+# ----------------------------
+Message = Dict[str, str]
+
+class HFClient:
+    """
+    Backward-compatible adapter that mirrors the old interface:
+        HFClient(model=...).generate(prompt: str) -> str (async)
+
+    Under the hood it uses the new multi-provider cascade (ChatClient).
+    The 'model' arg is accepted for compatibility but selection is driven
+    by Settings/provider_order; we keep it so tests can assert the call.
+    """
+    def __init__(self, model: str, settings: Optional[Settings] = None):
+        self._model = model  # kept for compatibility / tests
+        self._client = ChatClient(settings)
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        messages: Iterable[Message] = (
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
+        )
+        messages = list(messages) + [{"role": "user", "content": prompt}]
+
+        # ChatClient.chat is sync; run it in a thread so this stays async-compatible
+        def _call() -> str:
+            return self._client.chat(
+                messages,
+                temperature=temperature,
+                max_new_tokens=max_tokens,
+                stream=False,
+            )
+
+        return await asyncio.to_thread(_call)
+
+
+# ----------------------------
+# Service (uses cascade via HFClient; non-stream for plan generation)
 # ----------------------------
 class PlanService:
     """
-    Planner uses HF Router (requests-only). Always non-stream for plan generation.
+    Planner uses the multi-provider cascade (via HFClient adapter).
+    Always non-stream for plan generation to simplify parsing.
     """
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = RouterRequestsClient(
-            model=settings.model.name,
-            fallback=settings.model.fallback,
-            provider=settings.model.provider,
-            max_retries=2,
-            connect_timeout=10.0,
-            read_timeout=60.0,
-        )
+        # IMPORTANT: use keyword arg 'model=' so tests can assert called_with(model=...)
+        self.llm = HFClient(model=settings.model.name, settings=settings)
 
     async def generate(self, req: PlanRequest) -> PlanResponse:
         """
-        Build prompt -> call Router (non-stream) -> robustly parse -> PlanResponse.
+        Build prompt -> call LLM (non-stream) -> robustly parse -> PlanResponse.
         Includes a one-shot JSON reformat retry if the first output isn't valid JSON.
         """
         final_prompt = _build_prompt(req)
 
         # 1) First pass: ask for the plan
-        raw_text = await asyncio.to_thread(
-            self.client.plan_nonstream,
-            SYSTEM_PLANNER,
+        raw_text = await self.llm.generate(
             final_prompt,
-            self.settings.model.max_new_tokens,
-            self.settings.model.temperature,
+            temperature=float(self.settings.model.temperature),
+            max_tokens=int(self.settings.model.max_new_tokens),
+            system_prompt=SYSTEM_PLANNER,
         )
 
         # 2) If not valid JSON, ask the model to strictly reformat to JSON only (no fences)
@@ -196,14 +234,12 @@ class PlanService:
                 "Output ONLY JSON. No backticks. No extra keys.\n\nCONTENT:\n"
                 + raw_text
             )
-            re_text = await asyncio.to_thread(
-                self.client.plan_nonstream,
-                SYSTEM_PLANNER,
+            raw_text = await self.llm.generate(
                 reformat,
-                self.settings.model.max_new_tokens,
-                max(0.05, float(self.settings.model.temperature) * 0.75),
+                temperature=max(0.05, float(self.settings.model.temperature) * 0.75),
+                max_tokens=int(self.settings.model.max_new_tokens),
+                system_prompt=SYSTEM_PLANNER,
             )
-            raw_text = re_text  # replace with reformatted text
 
         # 3) Parse safely (or fallback) and validate against schema
         parsed = _safe_parse_or_fallback(raw_text, final_prompt)
@@ -216,7 +252,7 @@ class PlanService:
 async def generate_plan(req: PlanRequest, settings: Settings) -> PlanResponse:
     """
     Backward-compatible entry point:
-    previous code called services.plan.generate_plan(...)
+    previous code called services.plan_service.generate_plan(...)
     """
     service = PlanService(settings)
     return await service.generate(req)

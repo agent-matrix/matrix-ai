@@ -1,13 +1,24 @@
 model:
+  # HF router defaults (used at the last step)
   name: "HuggingFaceH4/zephyr-7b-beta"
   fallback: "mistralai/Mistral-7B-Instruct-v0.2"
-  provider: "featherless-ai"      # NEW: makes "model:provider" for Router
+  provider: "featherless-ai"
   max_new_tokens: 256
   temperature: 0.2
 
-# Chat backend + mode (requests → Router only)
-chat_backend: "router"             # reserved (future multi-backend)
-chat_stream: true                  # default streaming behavior for /v1/chat/stream
+  # Provider-specific defaults (free-tier friendly)
+  groq_model: "llama-3.1-8b-instant"
+  gemini_model: "gemini-2.5-flash"
+
+# Try providers in this order
+provider_order:
+  - groq
+  - gemini
+  - router
+
+# Switch to the multi-provider path
+chat_backend: "multi"
+chat_stream: true
 
 limits:
   rate_per_min: 60
