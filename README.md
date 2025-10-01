@@ -6,10 +6,6 @@ colorTo: indigo
 sdk: docker
 pinned: false
 ---
-Here’s an updated, production-ready **README.md** that reflects the latest architecture (multi-provider cascade: **GROQ → Gemini → HF Router**), SSE streaming, RAG, and middleware hardening. It keeps a professional tone, includes fresh diagrams, and is organized for fast adoption in prod.
-
----
-
 # matrix-ai
 
 **matrix-ai** is the AI planning microservice for the Matrix EcoSystem. It generates **short, low-risk, auditable remediation plans** from compact health context provided by **Matrix Guardian**, and also exposes a lightweight **RAG** Q&A over MatrixHub documents.
