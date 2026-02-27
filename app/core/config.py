@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os, yaml
-from pydantic import BaseModel, AnyHttpUrl
+from pydantic import BaseModel, AnyHttpUrl, AliasChoices, Field
 from typing import Optional, List
 
 class ModelCfg(BaseModel):
@@ -25,6 +25,12 @@ class RagCfg(BaseModel):
 
 class MatrixHubCfg(BaseModel):
     base_url: AnyHttpUrl = "https://api.matrixhub.io"
+    # Optional token (admin endpoints are NOT expected to be used by matrix-ai)
+    token: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("MATRIX_HUB_TOKEN", "MATRIX_TOKEN", "API_TOKEN"),
+        description="Bearer token if ever required (read-only usage preferred)",
+    )
 
 class SecurityCfg(BaseModel):
     admin_token: Optional[str] = None
@@ -74,6 +80,12 @@ class Settings(BaseModel):
             settings.model.gemini_model = os.environ["GEMINI_MODEL"]
         if "PROVIDER_ORDER" in os.environ:
             settings.provider_order = [p.strip().lower() for p in os.environ["PROVIDER_ORDER"].split(",") if p.strip()]
+
+        # Matrix Hub token (ecosystem-standard names)
+        for env_name in ("MATRIX_HUB_TOKEN", "MATRIX_TOKEN", "API_TOKEN"):
+            if env_name in os.environ:
+                settings.matrixhub.token = os.environ[env_name]
+                break
 
         # Default to cascade
         if settings.chat_backend not in ("multi", "router"):
