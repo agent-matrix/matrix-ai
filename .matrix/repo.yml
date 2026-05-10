@@ -1,0 +1,18 @@
+schema_version: "0.1"
+repo:
+  owner: "agent-matrix"
+  name: "matrix-ai"
+  full_name: "agent-matrix/matrix-ai"
+  role: "planner"
+alive: { participates: true, contracts_version: "0.2" }
+maintenance:
+  maintainer: "matrix-maintainer"
+  repair_enabled: true
+  repair_constraints: [pr_only, run_tests]
+governance:
+  risk_level: medium
+  requires_approval: true
+  approver: "matrix-guardian"
+economics: { budget_aware: true, reporter: "matrix-treasury" }
+events: { emitted: [], consumed: [] }
+health: { type: "http", endpoint: "/health", command: "" }
