@@ -84,7 +84,7 @@ except Exception:
 
 
 # ---- Routers ----
-from .routers import health, plan, chat
+from .routers import health, plan, chat, deliberate
 
 # Optional UI bundle (/, /chat, /dev)
 try:
@@ -97,6 +97,7 @@ except Exception:  # pragma: no cover
 TAGS_METADATA = [
     {"name": "Health", "description": "Liveness / readiness probes and basic service metadata."},
     {"name": "Planning", "description": "AI plan generation for Matrix Guardian (/v1/plan)."},
+    {"name": "Deliberation", "description": "Candidate strategy generation and PlanIR v2 synthesis (/v2/deliberate)."},
     {"name": "Chat", "description": "Lightweight RAG/Q&A about Matrix System (/v1/chat)."},
     {"name": "UI", "description": "Minimal web UI (Home, Chat, Dev) if enabled."},
 ]
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     # Core routers
     app.include_router(health.router, tags=["Health"])
     app.include_router(plan.router, prefix="/v1", tags=["Planning"])
+    app.include_router(deliberate.router, prefix="/v2", tags=["Deliberation"])
     app.include_router(chat.router, prefix="/v1", tags=["Chat"])
 
     # UI (/, /chat, /dev). Your ui.py already defines "/" → /chat
